@@ -845,16 +845,71 @@ public class ModernQQFrame extends JFrame {
 
         connectPanel.add(gotoConnectBtn, "gaptop 20");
 
+        // Tab 4: 关于软件
+        JPanel aboutPanel = new JPanel(new MigLayout("insets 15, fillx, wrap 1", "[grow]"));
+        aboutPanel.setOpaque(false);
+
+        JLabel aboutTitle = new JLabel("关于 BlueLink");
+        aboutTitle.setFont(UiUtils.FONT_BOLD.deriveFont(16f));
+        aboutPanel.add(aboutTitle, "gapbottom 10");
+
+        // Author
+        JPanel authorRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        authorRow.setOpaque(false);
+        authorRow.add(new JLabel("作者: "));
+        JLabel authorLabel = new JLabel("ZPC");
+        authorLabel.setFont(UiUtils.FONT_BOLD);
+        authorRow.add(authorLabel);
+        aboutPanel.add(authorRow, "gaptop 5");
+
+        // Email
+        JPanel emailRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        emailRow.setOpaque(false);
+        emailRow.add(new JLabel("联系邮箱: "));
+        JTextField emailField = new JTextField("privacyporton@proton.me");
+        emailField.setEditable(false);
+        emailField.setBorder(null);
+        emailField.setOpaque(false);
+        emailField.setFont(UiUtils.FONT_NORMAL);
+        emailRow.add(emailField);
+        aboutPanel.add(emailRow, "gaptop 5");
+
+        // GitHub
+        JPanel githubRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        githubRow.setOpaque(false);
+        githubRow.add(new JLabel("开源地址: "));
+        JLabel githubLink = new JLabel("<html><a href=''>https://github.com/123zpc/BlueLink</a></html>");
+        githubLink.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        githubLink.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseClicked(java.awt.event.MouseEvent e) {
+                try {
+                    java.awt.Desktop.getDesktop().browse(new java.net.URI("https://github.com/123zpc/BlueLink"));
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            }
+        });
+        githubRow.add(githubLink);
+        aboutPanel.add(githubRow, "gaptop 5");
+
+        // Version/Date
+        aboutPanel.add(new JLabel("版本: 1.0.0 (2026-01-25)"), "gaptop 20");
+
         // 添加 Tabs
         try {
+            FlatSVGIcon iconAbout = new FlatSVGIcon("com/bluelink/ui/icons/about.svg", 16, 16);
+
             tabbedPane.addTab("发送", iconSend, settingPanel);
             tabbedPane.addTab("通用", iconSettings, generalPanel);
             tabbedPane.addTab("连接", iconConnect, connectPanel);
+            tabbedPane.addTab("关于", iconAbout, aboutPanel);
         } catch (Exception e) {
             // Fallback if icons fail
             tabbedPane.addTab("发送", settingPanel);
             tabbedPane.addTab("通用", generalPanel);
             tabbedPane.addTab("连接", connectPanel);
+            tabbedPane.addTab("关于", aboutPanel);
         }
 
         mainPanel.add(tabbedPane, "grow");

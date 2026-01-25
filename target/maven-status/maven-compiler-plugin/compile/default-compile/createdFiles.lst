@@ -49,6 +49,7 @@ com\bluelink\ui\ModernQQFrame$11.class
 com\bluelink\ui\ConnectionPanel$4.class
 com\bluelink\net\jna\WinsockNative$GUID.class
 com\bluelink\ui\bubble\BubblePanel.class
+com\bluelink\ui\ModernQQFrame$14.class
 com\bluelink\ui\TrayManager.class
 com\bluelink\net\jna\JnaSocketInputStream.class
 com\bluelink\util\BluetoothUtils$BluetoothDevice.class

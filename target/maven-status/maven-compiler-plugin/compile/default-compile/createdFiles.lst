@@ -37,6 +37,7 @@ com\bluelink\util\BluetoothUtils.class
 com\bluelink\net\protocol\ProtocolWriter.class
 com\bluelink\ui\ModernQQFrame$3.class
 com\bluelink\ui\TrayManager$1.class
+com\bluelink\Main.class
 com\bluelink\net\jna\BluetoothApiNative.class
 com\bluelink\net\jna\WinsockNative$SOCKADDR_BTH.class
 com\bluelink\util\UiUtils$1.class

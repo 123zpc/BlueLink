@@ -215,6 +215,14 @@ public class ModernQQFrame extends JFrame {
                     if (connectionPanel != null) {
                         connectionPanel.onIncomingConnection(deviceName);
                     }
+                } else {
+                    // 断开连接处理，重置客户端状态
+                    if (client != null) {
+                        client.close();
+                    }
+                    if (currentSession != null) {
+                        currentSession = null;
+                    }
                 }
             });
         }

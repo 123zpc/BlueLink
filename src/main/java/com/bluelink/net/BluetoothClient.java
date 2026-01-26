@@ -23,6 +23,7 @@ public class BluetoothClient {
     private JnaSocketOutputStream outputStream;
     private final Object lock = new Object();
     private volatile boolean isConnecting = false;
+    private boolean winsockInitialized = false;
 
     public void setListener(TransferListener listener) {
         this.listener = listener;
@@ -48,7 +49,11 @@ public class BluetoothClient {
             try {
                 // 确保 Winsock 初始化
                 WinsockNative.WSAData data = new WinsockNative.WSAData();
-                lib.WSAStartup((short) 0x0202, data);
+                if (lib.WSAStartup((short) 0x0202, data) == 0) {
+                    synchronized (lock) {
+                        winsockInitialized = true;
+                    }
+                }
 
                 socketHandle = lib.socket(WinsockNative.AF_BTH, WinsockNative.SOCK_STREAM, WinsockNative.BTHPROTO_RFCOMM);
                 if (socketHandle == WinsockNative.INVALID_SOCKET) {
@@ -170,12 +175,16 @@ public class BluetoothClient {
                 clientSocket = WinsockNative.INVALID_SOCKET;
             }
             isConnecting = false;
-        }
-        // 尝试清理 Winsock
-        try {
-            WinsockNative.INSTANCE.WSACleanup();
-        } catch (Throwable t) {
-            // ignore
+            
+            // 只有在本实例初始化了 Winsock 时才清理
+            if (winsockInitialized) {
+                try {
+                    WinsockNative.INSTANCE.WSACleanup();
+                } catch (Throwable t) {
+                    // ignore
+                }
+                winsockInitialized = false;
+            }
         }
     }
 

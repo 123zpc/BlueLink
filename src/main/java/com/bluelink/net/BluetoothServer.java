@@ -218,6 +218,12 @@ public class BluetoothServer {
             WinsockNative.INSTANCE.closesocket(serverSocket);
             serverSocket = WinsockNative.INVALID_SOCKET;
         }
+        // 对应 runServer 中的 WSAStartup
+        try {
+            WinsockNative.INSTANCE.WSACleanup();
+        } catch (Throwable t) {
+            // ignore
+        }
     }
 
     private void notifyError(String msg) {

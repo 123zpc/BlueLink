@@ -13,7 +13,7 @@ BlueLink 是一款基于 **Windows Native Bluetooth API** (Winsock/RFCOMM) 开�
 
 ## 🛠️ 技术架构
 
-本项目由 **ZPC** 独立开发，于 **2026年1月25日** 发布，如有疑问可邮箱联系privacyporton@proton.me。
+本项目由 **ZPC** 借助AI开发，于 **2026年1月25日** 发布，如有疑问可邮箱联系privacyporton@proton.me。
 
 核心技术栈：
 - **通信层**: JNA (Java Native Access) 调用 Windows `ws2_32.dll` 与 `irprops.cpl`，直接操作底层 Bluetooth Socket。
@@ -27,14 +27,23 @@ BlueLink 是一款基于 **Windows Native Bluetooth API** (Winsock/RFCOMM) 开�
 src/main/java/com/bluelink/
 ├── 🚀 Main.java                 // 程序入口
 ├── 🖥️ ui/                       // 界面层
+│   ├── bubble/                 // 聊天气泡渲染
+│   ├── CodeInputPanel.java      // 连接码输入面板
+│   ├── ConnectionPanel.java     // 连接面板
 │   ├── ModernQQFrame.java      // 主窗口框架
-│   └── bubble/                 // 聊天气泡渲染
+│   └── TrayManager.java        // 系统托盘管理
 ├── 🌐 net/                      // 蓝牙网络核心层
 │   ├── jna/                    // Windows Native API 映射 (Winsock)
 │   ├── protocol/               // 自定义通信协议解析器
 │   ├── BluetoothServer.java    // RFCOMM 服务端
-│   └── BluetoothClient.java    // RFCOMM 客户端
+│   ├── BluetoothClient.java    // RFCOMM 客户端
+│   └── BluetoothSession.java    // 会话管理 (双向通信)
+├── 📦 db/                      // 数据层
+│   ├── DatabaseManager.java    // H2 数据库管理
+│   └── TransferDao.java        // 传输记录DAO
 └── 🔧 util/                     // 工具类
+    ├── BluetoothUtils.java      // 蓝牙地址/UUID工具
+    └── MdCodeUtil.java         // 连接码生成工具
 ```
 
 ## 📦 安装与运行
@@ -51,7 +60,16 @@ cd BlueLink
 mvn clean package
 ```
 
-## 📄 许可证
+## 使用说明（连接流程）
+
+1. 启动程序后会停留在连接页面。
+2. 选择“等待连接”或“发起连接”。
+3. 发起连接时输入对方的 6 位连接码。
+4. 连接成功后，界面与系统通知将显示对方的 6 位连接码。
+
+提示：连接码由蓝牙地址生成，仅用于本地配对显示。
+
+## 许可证
 
 本项目按 MIT 许可证开源。
 

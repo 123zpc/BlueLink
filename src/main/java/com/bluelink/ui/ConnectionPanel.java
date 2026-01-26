@@ -324,7 +324,10 @@ public class ConnectionPanel extends JPanel {
     }
 
     private void startScan() {
-        String targetCode = codeInput.getCode();
+        if (isScanning) return; // 防止重复点击
+
+        String targetCode = codeInput.getCode().trim(); // 去除可能的空白字符
+        System.out.println("开始扫描，目标连接码: '" + targetCode + "'");
 
         // 开发模式检查
         if (AppConfig.isDevBypassCode(targetCode)) {
@@ -360,6 +363,7 @@ public class ConnectionPanel extends JPanel {
 
         // 设置超时定时器
         timeoutTimer = new Timer(AppConfig.getConnectionTimeoutMs(), e -> {
+            System.out.println("超时定时器触发！");
             SwingUtilities.invokeLater(() -> {
                 // 先恢复控件状态
                 isScanning = false;
@@ -399,11 +403,28 @@ public class ConnectionPanel extends JPanel {
         // 异步扫描
         scanThread = new Thread(() -> {
             try {
+                System.out.println("正在执行设备发现...");
                 List<BluetoothUtils.BluetoothDevice> devices = BluetoothUtils.discoverDevices(10);
+                System.out.println("设备发现完成，找到 " + devices.size() + " 个设备");
+                
                 BluetoothUtils.BluetoothDevice target = BluetoothUtils.findDeviceByCode(targetCode, devices);
+                if (target != null) {
+                    System.out.println("找到目标设备: " + target);
+                } else {
+                    System.out.println("未找到目标设备 (code=" + targetCode + ")");
+                    for (BluetoothUtils.BluetoothDevice d : devices) {
+                        System.out.println("  - 候选设备: " + d.code + " (" + d.name + ")");
+                    }
+                }
 
                 SwingUtilities.invokeLater(() -> {
                     if (target != null) {
+                        // 找到设备，必须停止超时定时器，防止干扰
+                        if (timeoutTimer != null) {
+                            timeoutTimer.stop();
+                            timeoutTimer = null;
+                        }
+
                         // 找到设备，保持禁用状态，继续连接
                         statusLabel.setText("正在连接: " + target.name + "...");
                         statusLabel.setForeground(new Color(60, 160, 60));
@@ -416,8 +437,9 @@ public class ConnectionPanel extends JPanel {
                         // 更新按钮文字
                         scanBtn.setText("连接中...");
 
-                        // 直接连接（无需确认）- 超时定时器仍然有效
+                        // 直接连接（无需确认）
                         if (callback != null) {
+                            System.out.println("调用 onConnected 回调: " + target.address);
                             callback.onConnected(false, String.valueOf(target.address));
                         }
                     } else {
@@ -543,6 +565,48 @@ public class ConnectionPanel extends JPanel {
             statusLabel.setForeground(new Color(60, 160, 60));
         });
     }
+
+    /**
+     * 外部调用：连接失败通知
+     */
+    public void onConnectionFailed(String error) {
+        SwingUtilities.invokeLater(() -> {
+            // 停止超时定时器
+            if (timeoutTimer != null) {
+                timeoutTimer.stop();
+                timeoutTimer = null;
+            }
+
+            // 恢复控件状态
+            isScanning = false;
+            if (scanThread != null) {
+                scanThread.interrupt();
+                scanThread = null;
+            }
+
+            scanBtn.setText("扫描连接");
+            scanBtn.setEnabled(true);
+
+            connectBtn.setText("连接他人");
+            connectBtn.setForeground(UiUtils.COLOR_PRIMARY);
+            connectBtn.setBorder(BorderFactory.createLineBorder(new Color(220, 230, 240), 2));
+            for (java.awt.event.ActionListener l : connectBtn.getActionListeners()) {
+                connectBtn.removeActionListener(l);
+            }
+            connectBtn.addActionListener(evt -> showConnectInput());
+
+            codeInput.setEnabled(true);
+            waitBtn.setEnabled(true);
+
+            // 显示错误信息
+            statusLabel.setText("连接失败: " + error);
+            statusLabel.setForeground(new Color(200, 80, 80));
+
+            revalidate();
+            repaint();
+        });
+    }
+
 
     /**
      * 设置是否从设置页面进入

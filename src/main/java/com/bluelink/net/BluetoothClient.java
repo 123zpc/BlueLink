@@ -4,6 +4,8 @@ import com.bluelink.net.jna.WinsockNative;
 import com.bluelink.net.jna.WinsockNative.SOCKADDR_BTH;
 import com.bluelink.net.protocol.ProtocolWriter;
 import com.bluelink.net.jna.JnaSocketOutputStream;
+import com.sun.jna.Native;
+import com.bluelink.util.BluetoothUtils;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -16,7 +18,7 @@ import java.util.concurrent.Executors;
  */
 public class BluetoothClient {
     private int clientSocket = WinsockNative.INVALID_SOCKET;
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService executor = Executors.newCachedThreadPool();
     private TransferListener listener;
     private JnaSocketOutputStream outputStream;
 
@@ -59,49 +61,68 @@ public class BluetoothClient {
 
             addr.write();
 
-            if (lib.connect(clientSocket, addr, addr.size()) == WinsockNative.SOCKET_ERROR) {
-                notifyError("连接失败: " + lib.WSAGetLastError());
+            System.out.println("[Client] 正在连接: " + addressStr + " (UUID: SPP)");
+            
+            // JNA: 在调用前清除错误，确保获取的是本次调用的错误
+            Native.setLastError(0);
+            int connectResult = lib.connect(clientSocket, addr, addr.size());
+            System.out.println("[Client] connect 返回值: " + connectResult);
+            
+            if (connectResult == WinsockNative.SOCKET_ERROR) {
+                // JNA 推荐使用 Native.getLastError() 来获取系统调用的错误码
+                // 因为 JNA 内部机制可能会重置 GetLastError
+                int errorCode = Native.getLastError();
+                
+                // 如果 Native.getLastError() 也没获取到（还是0），再尝试 WSAGetLastError 作为保底
+                if (errorCode == 0) {
+                     errorCode = lib.WSAGetLastError();
+                }
+                
+                System.out.println("[Client] 连接失败，错误码: " + errorCode);
+                notifyError("连接失败: " + errorCode);
                 close();
                 return;
             }
 
+            System.out.println("[Client] Socket 连接成功，正在创建会话...");
             outputStream = new JnaSocketOutputStream(clientSocket);
-            notifyConnection(true, "已连接到: " + addressStr);
+            
+            BluetoothSession session = new BluetoothSession(clientSocket, listener);
+            if (listener != null) {
+                listener.onSessionCreated(session);
+            }
+            session.start();
+
+            String code = BluetoothUtils.addressToCode(addr.btAddr);
+            notifyConnection(true, code);
         });
     }
 
+    // 废弃的方法，现在通过 Session 发送
+    @Deprecated
     public void send(String message) throws IOException {
+        // 兼容旧代码，但建议使用 Session
         if (clientSocket == WinsockNative.INVALID_SOCKET || outputStream == null) {
             throw new IOException("未连接");
         }
-
-        // 文本消息约定 name = "MSG"
+        System.out.println("[Client] 准备发送消息: " + message);
         byte[] packet = ProtocolWriter.createPacket("MSG", message.getBytes("UTF-8"));
         outputStream.write(packet);
         outputStream.flush();
     }
 
+    @Deprecated
     public void sendFile(File file) throws IOException {
         if (clientSocket == WinsockNative.INVALID_SOCKET || outputStream == null) {
             throw new IOException("未连接");
         }
-
-        if (file.length() > 50 * 1024 * 1024) {
-            throw new IOException("文件过大(限制 50MB)");
-        }
-
         byte[] fileData = new byte[(int) file.length()];
         try (FileInputStream fis = new FileInputStream(file)) {
             fis.read(fileData);
         }
-
         byte[] packet = ProtocolWriter.createPacket(file.getName(), fileData);
         outputStream.write(packet);
         outputStream.flush();
-
-        // 这里可以通过 listener 更新进度 (mock)
-        if (listener != null)
-            listener.onTransferProgress(file.getName(), file.length(), file.length());
     }
 
     private void close() {

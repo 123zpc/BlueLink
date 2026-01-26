@@ -51,6 +51,7 @@ public class ModernQQFrame extends JFrame {
     // 网络组件
     private com.bluelink.net.BluetoothServer server;
     private com.bluelink.net.BluetoothClient client;
+    private com.bluelink.net.BluetoothSession currentSession;
 
     public ModernQQFrame() {
         initUI();
@@ -110,11 +111,21 @@ public class ModernQQFrame extends JFrame {
         }
 
         @Override
+        public void onSessionCreated(com.bluelink.net.BluetoothSession session) {
+            currentSession = session;
+            System.out.println("[UI] 会话已建立，保存 session");
+        }
+
+        @Override
         public void onError(String message) {
             SwingUtilities.invokeLater(() -> {
                 System.err.println("错误: " + message);
-                // JOptionPane.showMessageDialog(ModernQQFrame.this, message, "错误",
-                // JOptionPane.ERROR_MESSAGE);
+                trayManager.showNotification("错误", message);
+                
+                // 如果在连接页面，显示错误
+                if (connectionPanel != null && connectionPanel.isVisible()) {
+                    connectionPanel.onConnectionFailed(message);
+                }
             });
         }
     }
@@ -332,7 +343,11 @@ public class ModernQQFrame extends JFrame {
         // 3. 异步网络发送
         new Thread(() -> {
             try {
-                client.send(text);
+                if (currentSession != null) {
+                    currentSession.sendMessage(text);
+                } else {
+                    client.send(text);
+                }
 
                 // 发送成功: 更新数据库状态 (Status=SUCCESS)
                 if (item.id > 0) {
@@ -372,7 +387,11 @@ public class ModernQQFrame extends JFrame {
         // 3. 异步网络发送
         new Thread(() -> {
             try {
-                client.sendFile(file);
+                if (currentSession != null) {
+                    currentSession.sendFile(file);
+                } else {
+                    client.sendFile(file);
+                }
 
                 // 发送成功: 更新数据库状态 (Status=SUCCESS)
                 if (item.id > 0) {
@@ -1261,9 +1280,17 @@ public class ModernQQFrame extends JFrame {
         new Thread(() -> {
             try {
                 if ("TEXT".equals(item.type)) {
-                    client.send(item.content);
+                    if (currentSession != null) {
+                        currentSession.sendMessage(item.content);
+                    } else {
+                        client.send(item.content);
+                    }
                 } else if ("FILE".equals(item.type)) {
-                    client.sendFile(new File(item.content));
+                    if (currentSession != null) {
+                        currentSession.sendFile(new File(item.content));
+                    } else {
+                        client.sendFile(new File(item.content));
+                    }
                 }
 
                 // 成功
@@ -1329,7 +1356,7 @@ public class ModernQQFrame extends JFrame {
         }
     }
 
-    private void loadHistory() {
+    public void loadHistory() {
         // 初始加载最新的 25 条
         java.util.List<com.bluelink.db.TransferDao.LogItem> list = com.bluelink.db.TransferDao.loadHistory(-1, 25);
         for (com.bluelink.db.TransferDao.LogItem item : list) {

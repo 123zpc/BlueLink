@@ -6,14 +6,21 @@ import com.sun.jna.Structure;
 import com.sun.jna.Pointer;
 import com.sun.jna.ptr.IntByReference;
 import java.util.Arrays;
-import java.util.List;
+import java.util.Collections;
+import java.util.Map;
 
 /**
  * Ws2_32.dll JNA 映射
  * 用于访问 Windows 原生 Socket API (特别是蓝牙 AF_BTH)
  */
 public interface WinsockNative extends Library {
-    WinsockNative INSTANCE = Native.load("Ws2_32", WinsockNative.class);
+    // 关键：开启 JNA 的错误码捕获功能
+    // 注意：不要使用 W32APIFunctionMapper，因为它会尝试给所有函数加 A/W 后缀，
+    // 而 Ws2_32.dll 中 connect/send/recv 等核心函数没有后缀，会导致 UnsatisfiedLinkError。
+    // 对于像 WSASetService 这样有后缀的函数，我们在接口中显式声明为 WSASetServiceA。
+    
+    WinsockNative INSTANCE = Native.load("Ws2_32", WinsockNative.class, 
+        Collections.singletonMap(Library.OPTION_CALLING_CONVENTION, com.sun.jna.win32.StdCallLibrary.STDCALL_CONVENTION));
 
     // 常量定义
     int AF_BTH = 32;
@@ -23,16 +30,36 @@ public interface WinsockNative extends Library {
     int SOCKET_ERROR = -1;
 
     // 结构体定义
-    @Structure.FieldOrder({ "AddressFamily", "btAddr", "serviceClassId", "port", "dummy" })
+    // 重要：Windows API 结构体通常是 1 字节对齐或 8 字节对齐，
+    // SOCKADDR_BTH 在 WinSock2.h 中定义如下：
+    // typedef struct _SOCKADDR_BTH {
+    //     USHORT      addressFamily;  // 2 bytes
+    //     BTH_ADDR    btAddr;         // 8 bytes (unsigned __int64)
+    //     GUID        serviceClassId; // 16 bytes
+    //     ULONG       port;           // 4 bytes
+    // } SOCKADDR_BTH, *PSOCKADDR_BTH;
+    // 总大小: 2 + 8 + 16 + 4 = 30 bytes
+    // 但是，由于内存对齐，btAddr (8 bytes) 通常需要 8 字节对齐，导致 addressFamily 后面可能有 6 字节填充
+    // 或者 #include <pshpack1.h> 强制 1 字节对齐。
+    // 在 Windows SDK 中，SOCKADDR_BTH 是 #include <pshpack1.h> 的，所以是紧凑排列的 (1字节对齐)！
+    
+    @Structure.FieldOrder({ "AddressFamily", "btAddr", "serviceClassId", "port" })
     class SOCKADDR_BTH extends Structure {
         public short AddressFamily;
-        public long btAddr; // BTH_ADDR is a 64-bit integer
+        public long btAddr;
         public GUID serviceClassId;
-        public int port; // ULONG or ULONG associated with port
-        public byte[] dummy = new byte[0]; // 只需要对齐
+        public int port;
 
         public SOCKADDR_BTH() {
             this.AddressFamily = (short) AF_BTH;
+            // 关键：Windows SDK 中 SOCKADDR_BTH 是 #include <pshpack1.h>，即 1 字节对齐
+            setAlignType(Structure.ALIGN_NONE); 
+        }
+
+        // 覆盖 getFieldOrder 以确保顺序
+        @Override
+        protected java.util.List<String> getFieldOrder() {
+            return java.util.Arrays.asList("AddressFamily", "btAddr", "serviceClassId", "port");
         }
     }
 
@@ -54,9 +81,23 @@ public interface WinsockNative extends Library {
     // 核心函数映射
 
     /**
+     * WSAData 结构体
+     */
+    @Structure.FieldOrder({ "wVersion", "wHighVersion", "szDescription", "szSystemStatus", "iMaxSockets", "iMaxUdpDg", "lpVendorInfo" })
+    class WSAData extends Structure {
+        public short wVersion;
+        public short wHighVersion;
+        public byte[] szDescription = new byte[257];
+        public byte[] szSystemStatus = new byte[129];
+        public short iMaxSockets;
+        public short iMaxUdpDg;
+        public Pointer lpVendorInfo;
+    }
+
+    /**
      * 初始化 Winsock
      */
-    int WSAStartup(short wVersionRequested, Pointer lpWSAData);
+    int WSAStartup(short wVersionRequested, WSAData lpWSAData);
 
     /**
      * 创建 Socket
@@ -82,6 +123,12 @@ public interface WinsockNative extends Library {
      * 连接
      */
     int connect(int s, Structure name, int namelen);
+    
+    /**
+     * 获取最后的错误码
+     * 注意：必须在失败后立即调用，且不能有其他 JNA 调用干扰
+     */
+    int WSAGetLastError();
 
     /**
      * 发送数据
@@ -99,30 +146,21 @@ public interface WinsockNative extends Library {
     int closesocket(int s);
 
     /**
-     * 获取最后错误代码
-     */
-    int WSAGetLastError();
-
-    /**
-     * 清理
-     */
-    /**
      * 清理
      */
     int WSACleanup();
 
     // --- 服务注册相关 ---
 
-    int RNRSERVICE_REGISTER = 1;
-    int RNRSERVICE_DEREGISTER = 2;
+    // 关键修正：Windows SDK 定义 RNRSERVICE_REGISTER 为 0
+    int RNRSERVICE_REGISTER = 0; 
+    int RNRSERVICE_DEREGISTER = 1;
     int RNRSERVICE_DELETE = 2;
 
-    @Structure.FieldOrder({ "iSockaddrLength", "lpSockaddr", "iSocketType", "iProtocol" })
+    @Structure.FieldOrder({ "lpSockaddr", "iSockaddrLength" })
     public static class SOCKET_ADDRESS extends Structure {
-        public int iSockaddrLength;
         public Pointer lpSockaddr;
-        public int iSocketType;
-        public int iProtocol;
+        public int iSockaddrLength;
 
         public SOCKET_ADDRESS() {
         }
@@ -142,7 +180,7 @@ public interface WinsockNative extends Library {
     }
 
     @Structure.FieldOrder({ "dwSize", "lpszServiceInstanceName", "lpServiceClassId", "lpVersion", "lpszComment",
-            "dwNameSpace", "lpNSProviderId", "lpszContext", "dwNumberOfCsAddrs", "lpcsaBuffer", "lpBlob" })
+            "dwNameSpace", "lpNSProviderId", "lpszContext", "dwNumberOfProtocols", "lpafpProtocols", "lpszQueryString", "dwNumberOfCsAddrs", "lpcsaBuffer", "dwOutputFlags", "lpBlob" })
     public static class WSAQUERYSET extends Structure {
         public int dwSize;
         public String lpszServiceInstanceName;
@@ -152,12 +190,24 @@ public interface WinsockNative extends Library {
         public int dwNameSpace;
         public Pointer lpNSProviderId; // GUID*
         public String lpszContext;
+        public int dwNumberOfProtocols;
+        public Pointer lpafpProtocols; // LPAFPROTOCOLS
+        public String lpszQueryString;
         public int dwNumberOfCsAddrs;
         public Pointer lpcsaBuffer; // CSADDR_INFO*
+        public int dwOutputFlags;
         public Pointer lpBlob;
 
         public WSAQUERYSET() {
+            // 关键：对齐方式必须与 OS 一致。默认 JNA 会尝试匹配，但有时候显式声明更好。
+            // 另外，确保 size() 正确计算
             dwSize = size();
+        }
+
+        @Override
+        protected java.util.List<String> getFieldOrder() {
+            return java.util.Arrays.asList("dwSize", "lpszServiceInstanceName", "lpServiceClassId", "lpVersion", "lpszComment",
+            "dwNameSpace", "lpNSProviderId", "lpszContext", "dwNumberOfProtocols", "lpafpProtocols", "lpszQueryString", "dwNumberOfCsAddrs", "lpcsaBuffer", "dwOutputFlags", "lpBlob");
         }
     }
 
@@ -165,11 +215,12 @@ public interface WinsockNative extends Library {
 
     /**
      * 注册服务
+     * 注意：lpqs 必须是 WSAQUERYSET 的指针，或者 JNA Structure
      */
-    int WSASetService(WSAQUERYSET lpqs, int essOperation, int dwControlFlags);
+    int WSASetServiceA(WSAQUERYSET lpqs, int essOperation, int dwControlFlags);
 
     /**
-     * 获取 Socket 名称信息 (getsockname)
+     * 获取 Socket 名称
      */
     int getsockname(int s, Structure name, IntByReference namelen);
 }

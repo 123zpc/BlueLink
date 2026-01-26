@@ -22,6 +22,7 @@ public class ProtocolWriter {
      * 但考虑到 JNA send 接口通常处理 byte[]，这里先实现 byte[] 生成。
      */
     public static byte[] createPacket(String name, byte[] data) throws IOException {
+        System.out.println("[ProtocolWriter] 创建数据包: " + name + ", 数据大小: " + data.length);
         // 1. 压缩数据
         ByteArrayOutputStream compressedBaos = new ByteArrayOutputStream();
         try (GZIPOutputStream gzip = new GZIPOutputStream(compressedBaos)) {

@@ -31,7 +31,9 @@ public class ProtocolReader {
         int magic;
         try {
             magic = dis.readInt();
+            System.out.println("[Protocol] Magic 读取成功: " + Integer.toHexString(magic));
         } catch (IOException e) {
+            System.out.println("[Protocol] Magic 读取失败 (可能是连接关闭): " + e.getMessage());
             return null; // Stream ended
         }
 
@@ -41,14 +43,17 @@ public class ProtocolReader {
 
         // 2. 读取名称
         int nameLen = dis.readInt();
+        System.out.println("[Protocol] NameLen: " + nameLen);
         byte[] nameBytes = new byte[nameLen];
         dis.readFully(nameBytes);
         String name = new String(nameBytes, "UTF-8");
+        System.out.println("[Protocol] Name: " + name);
 
         // 3. 读取大小和 CRC
         long originalSize = dis.readLong();
         long compressedSize = dis.readLong(); // NEW
         long receivedCrc = dis.readLong();
+        System.out.println(String.format("[Protocol] Header: OrigSize=%d, CompSize=%d, CRC=%d", originalSize, compressedSize, receivedCrc));
 
         // 4. 读取压缩数据
         // 安全检查: 防止 OOM
@@ -58,6 +63,7 @@ public class ProtocolReader {
 
         byte[] compressedData = new byte[(int) compressedSize];
         dis.readFully(compressedData);
+        System.out.println("[Protocol] Body 读取完成");
 
         // 5. 解压
         ByteArrayOutputStream decompressedBaos = new ByteArrayOutputStream();

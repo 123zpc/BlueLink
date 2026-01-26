@@ -3,6 +3,7 @@ package com.bluelink.net;
 import com.bluelink.net.jna.WinsockNative;
 import com.bluelink.net.jna.WinsockNative.SOCKADDR_BTH;
 import com.sun.jna.ptr.IntByReference;
+import com.sun.jna.Native;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -29,198 +30,181 @@ public class BluetoothServer {
     }
 
     private void runServer() {
-        WinsockNative lib = WinsockNative.INSTANCE;
+        System.out.println("[Server] runServer 线程启动");
+        try {
+            WinsockNative lib = WinsockNative.INSTANCE;
+            
+            // 0. 初始化 Winsock (保险起见)
+            WinsockNative.WSAData wsaData = new WinsockNative.WSAData();
+            if (lib.WSAStartup((short) 0x0202, wsaData) != 0) {
+                 notifyError("WSAStartup 失败");
+                 return;
+            }
 
-        // 1. WSAStartup (虽然 Java Socket 也会初始化，但手动调用是个好习惯确保环境)
-        // 实际上 JNA 加载 DLL 时通常不需要显式调用 WSAStartup 如果之前已经有 Java Net 初始化，
-        // 但为了保险起见，这里忽略也可以，或者做一下。
-        // 为简化，假设环境 Ready。
+            // ...
+            serverSocket = lib.socket(WinsockNative.AF_BTH, WinsockNative.SOCK_STREAM, WinsockNative.BTHPROTO_RFCOMM);
+            if (serverSocket == WinsockNative.INVALID_SOCKET) {
+                notifyError("创建服务端 Socket 失败: " + lib.WSAGetLastError());
+                return;
+            }
 
-        // 2. 创建 Socket
-        serverSocket = lib.socket(WinsockNative.AF_BTH, WinsockNative.SOCK_STREAM, WinsockNative.BTHPROTO_RFCOMM);
-        if (serverSocket == WinsockNative.INVALID_SOCKET) {
-            notifyError("创建服务端 Socket 失败: " + lib.WSAGetLastError());
-            return;
-        }
-
-        // 3. Bind
-        SOCKADDR_BTH addr = new SOCKADDR_BTH();
-        addr.port = 0; // 让系统分配
-        // 这里需要注意 JNA Structure 的使用
-        addr.write();
-
-        if (lib.bind(serverSocket, addr, addr.size()) == WinsockNative.SOCKET_ERROR) {
-            notifyError("绑定端口失败: " + lib.WSAGetLastError());
-            close();
-            return;
-        }
-
-        if (lib.listen(serverSocket, 5) == WinsockNative.SOCKET_ERROR) {
-            notifyError("监听失败: " + lib.WSAGetLastError());
-            close();
-            return;
-        }
-
-        // 4.5 注册服务 (SDP)
-        // 关键步骤：必须注册 UUID，手机才能通过 SPP 协议找到并连接
-        // 使用标准 SPP UUID: 00001101-0000-1000-8000-00805F9B34FB
-        WinsockNative.SOCKADDR_BTH sa = new WinsockNative.SOCKADDR_BTH();
-        IntByReference saLen = new IntByReference(sa.size());
-        if (lib.getsockname(serverSocket, sa, saLen) == WinsockNative.SOCKET_ERROR) {
-            notifyError("获取端口失败: " + lib.WSAGetLastError());
-            close();
-            return;
-        }
-
-        WinsockNative.WSAQUERYSET qs = new WinsockNative.WSAQUERYSET();
-        qs.dwSize = qs.size();
-        qs.lpszServiceInstanceName = "BlueLink Server";
-        qs.lpszComment = "BlueLink Bluetooth Service";
-        qs.dwNameSpace = lib.NS_BTH;
-        qs.dwNumberOfCsAddrs = 1;
-
-        // 设置 UUID (SPP)
-        qs.lpServiceClassId = new com.sun.jna.Memory(16);
-        // SPP UUID: 00001101-0000-1000-8000-00805F9B34FB
-        // Windows 也是小端字节序
-        byte[] uuidBytes = new byte[] {
-                (byte) 0x01, (byte) 0x11, (byte) 0x00, (byte) 0x00,
-                (byte) 0x00, (byte) 0x10, (byte) 0x80, (byte) 0x00,
-                (byte) 0x00, (byte) 0x80, (byte) 0x5F, (byte) 0x9B,
-                (byte) 0x34, (byte) 0xFB
-        };
-        // 修正 JNA 内存写入
-        // UUID 结构：Data1(4), Data2(2), Data3(2), Data4(8)
-        // 00001101 -> Data1 (int)
-        // 0000 -> Data2 (short)
-        // 1000 -> Data3 (short)
-        // 8000-00805F9B34FB -> Data4 (byte[8])
-
-        // 简单直接写入字节流（注意字节序）
-        // GUID: {00001101-0000-1000-8000-00805F9B34FB}
-        // Memory 布局：
-        // 0-3: Data1 (0x00001101) -> 小端: 01 11 00 00
-        // 4-5: Data2 (0x0000) -> 00 00
-        // 6-7: Data3 (0x1000) -> 00 10
-        // 8-15: Data4 (80 00 00 80 5F 9B 34 FB)
-
-        qs.lpServiceClassId.setInt(0, 0x00001101);
-        qs.lpServiceClassId.setShort(4, (short) 0x0000);
-        qs.lpServiceClassId.setShort(6, (short) 0x1000);
-        qs.lpServiceClassId.setByte(8, (byte) 0x80);
-        qs.lpServiceClassId.setByte(9, (byte) 0x00);
-        qs.lpServiceClassId.setByte(10, (byte) 0x00);
-        qs.lpServiceClassId.setByte(11, (byte) 0x80);
-        qs.lpServiceClassId.setByte(12, (byte) 0x5F);
-        qs.lpServiceClassId.setByte(13, (byte) 0x9B);
-        qs.lpServiceClassId.setByte(14, (byte) 0x34);
-        qs.lpServiceClassId.setByte(15, (byte) 0xFB);
-
-        // 设置地址信息
-        WinsockNative.CSADDR_INFO csa = new WinsockNative.CSADDR_INFO();
-        csa.iSocketType = WinsockNative.SOCK_STREAM;
-        csa.iProtocol = WinsockNative.BTHPROTO_RFCOMM;
-
-        csa.LocalAddr.iSockaddrLength = sa.size();
-        csa.LocalAddr.lpSockaddr = sa.getPointer();
-        csa.LocalAddr.iSocketType = WinsockNative.SOCK_STREAM;
-        csa.LocalAddr.iProtocol = WinsockNative.BTHPROTO_RFCOMM;
-
-        // 我们不需要 RemoteAddr，但需要分配内存
-        // JNA Structure 需要 write()
-        sa.write();
-        csa.write();
-
-        // CSADDR_INFO 数组指针
-        qs.lpcsaBuffer = csa.getPointer();
-
-        // 注册服务
-        if (lib.WSASetService(qs, lib.RNRSERVICE_REGISTER, 0) == WinsockNative.SOCKET_ERROR) {
-            notifyError("注册服务失败: " + lib.WSAGetLastError());
-            // 不关闭，也许客户端能暴力连接？
-        } else {
-            System.out.println("蓝牙服务已注册 (UUID: SPP)");
-        }
-
-        if (listener != null) {
-            listener.onConnectionStatusChanged(true, "服务端已启动，等待连接...");
-        }
-
-        // 5. Accept Loop
-        while (running) {
-            SOCKADDR_BTH clientAddr = new SOCKADDR_BTH();
-            IntByReference len = new IntByReference(clientAddr.size());
-
-            int clientSocket = lib.accept(serverSocket, clientAddr, len);
-            if (clientSocket != WinsockNative.INVALID_SOCKET) {
-                clientAddr.read();
-                notifyConnection(true, "客户端: " + clientAddr.btAddr); // 这里简单显示地址，实际可能需要解析
-
-                // 处理客户端连接
-                executor.submit(() -> handleClient(clientSocket));
+            // 3. Bind
+            SOCKADDR_BTH addr = new SOCKADDR_BTH();
+        addr.port = 7;
+            // 这里需要注意 JNA Structure 的使用
+            addr.write();
+    
+            if (lib.bind(serverSocket, addr, addr.size()) == WinsockNative.SOCKET_ERROR) {
+                notifyError("绑定端口失败: " + lib.WSAGetLastError());
+                close();
+                return;
+            }
+    
+            if (lib.listen(serverSocket, 5) == WinsockNative.SOCKET_ERROR) {
+                notifyError("监听失败: " + lib.WSAGetLastError());
+                close();
+                return;
+            }
+    
+            // 4.5 注册服务 (SDP)
+            // 关键步骤：必须注册 UUID，手机才能通过 SPP 协议找到并连接
+            // 使用标准 SPP UUID: 00001101-0000-1000-8000-00805F9B34FB
+            WinsockNative.SOCKADDR_BTH sa = new WinsockNative.SOCKADDR_BTH();
+            IntByReference saLen = new IntByReference(sa.size());
+            if (lib.getsockname(serverSocket, sa, saLen) == WinsockNative.SOCKET_ERROR) {
+                notifyError("获取端口失败: " + lib.WSAGetLastError());
+                close();
+                return;
+            }
+            sa.read(); // 必须读取 native 内存更新到 Java 对象
+            System.out.println("[Server] getsockname 成功: port=" + sa.port + ", btAddr=" + sa.btAddr + ", len=" + saLen.getValue());
+    
+            WinsockNative.WSAQUERYSET qs = new WinsockNative.WSAQUERYSET();
+            // 重新计算大小（虽然构造函数里有，但为了保险）
+            // 注意：qs.write() 非常重要，它将 Java 对象的内存同步到本地内存
+            qs.dwSize = qs.size();
+            qs.lpszServiceInstanceName = "BlueLink Server";
+            qs.lpszComment = "BlueLink Bluetooth Service";
+            qs.dwNameSpace = lib.NS_BTH;
+            qs.dwNumberOfCsAddrs = 1;
+            qs.dwOutputFlags = 0; // 明确初始化
+            
+            // 关键：GUID 结构体内存布局
+            // 我们定义一个 GUID 结构体实例，然后获取其指针
+            WinsockNative.GUID spGuid = new WinsockNative.GUID();
+            spGuid.Data1 = 0x00001101;
+            spGuid.Data2 = 0x0000;
+            spGuid.Data3 = 0x1000;
+            spGuid.Data4 = new byte[] {
+                (byte) 0x80, (byte) 0x00, (byte) 0x00, (byte) 0x80,
+                (byte) 0x5F, (byte) 0x9B, (byte) 0x34, (byte) 0xFB
+            };
+            spGuid.write(); // 写入内存
+            
+            qs.lpServiceClassId = spGuid.getPointer();
+    
+            // 设置地址信息
+            // 必须使用分配了内存的结构体，不能只是局部变量
+            // 为了安全起见，我们可以使用 Memory 手动构建 CSADDR_INFO 数组
+            // 但这里先尝试修正 CSADDR_INFO 的字段赋值
+            
+            WinsockNative.CSADDR_INFO csa = new WinsockNative.CSADDR_INFO();
+            // iSocketType 和 iProtocol 必须为 0 或者正确的值
+            // 某些文档显示在 WSASetService 中，这些值可能不需要，或者需要与 socket 创建时一致
+            csa.iSocketType = WinsockNative.SOCK_STREAM;
+            csa.iProtocol = WinsockNative.BTHPROTO_RFCOMM;
+    
+            // LocalAddr 设置
+            csa.LocalAddr.iSockaddrLength = sa.size();
+            // 必须重新写入 sa，确保指针指向的数据是最新的
+            sa.write();
+            csa.LocalAddr.lpSockaddr = sa.getPointer();
+            
+            // RemoteAddr 设置
+            // 关键尝试：将 RemoteAddr 设为 NULL 或空结构体
+            // 许多示例显示服务注册时 RemoteAddr 可以忽略，或者设为与 LocalAddr 一样
+            // 如果设为一样报错，尝试设为空
+            csa.RemoteAddr.iSockaddrLength = sa.size();
+            csa.RemoteAddr.lpSockaddr = sa.getPointer();
+            
+            // 写入 csa
+            csa.write();
+            
+            // 手动构建内存块来存储 CSADDR_INFO 数组
+            // 因为 qs.lpcsaBuffer 需要一个指向 CSADDR_INFO 数组的指针
+            // 虽然我们只有一个元素，但直接用结构体指针通常是可以的
+            // 为了排除 JNA 结构体数组转换问题，我们直接用 csa.getPointer()
+            qs.lpcsaBuffer = csa.getPointer();
+            
+            // 关键：lpBlob 必须为 NULL 或者指向有效数据
+            qs.lpBlob = null; 
+            
+            // 再次检查 WSAQUERYSET 的其他字段
+            qs.lpszContext = null; // 确保为空
+            qs.lpVersion = null;   // 确保为空
+            qs.lpNSProviderId = null; // 确保为空
+            
+            // 重要：在传递给本地函数前，必须将所有字段写入内存
+            qs.write();
+    
+            // 注册服务
+            Native.setLastError(0);
+            if (lib.WSASetServiceA(qs, lib.RNRSERVICE_REGISTER, 0) == WinsockNative.SOCKET_ERROR) {
+                int errorCode = Native.getLastError();
+                if (errorCode == 0) errorCode = lib.WSAGetLastError();
+                
+                notifyError("注册服务失败: " + errorCode);
+                // 不关闭，也许客户端能暴力连接？
             } else {
-                if (running) {
-                    // 只有在运行时出错才报错，关闭时出错忽略
-                    // notifyError("Accept 失败: " + lib.WSAGetLastError());
+                System.out.println("蓝牙服务已注册 (UUID: SPP)");
+            }
+    
+            if (listener != null) {
+                listener.onConnectionStatusChanged(false, "服务端已启动，等待连接...");
+            }
+    
+            // 5. Accept Loop
+            System.out.println("[Server] 开始进入 Accept 循环");
+            while (running) {
+                SOCKADDR_BTH clientAddr = new SOCKADDR_BTH();
+                IntByReference len = new IntByReference(clientAddr.size());
+    
+                System.out.println("[Server] 等待客户端连接 (accept)...");
+                int clientSocket = lib.accept(serverSocket, clientAddr, len);
+                if (clientSocket != WinsockNative.INVALID_SOCKET) {
+                    clientAddr.read();
+                    System.out.println("[Server] 接受到连接! Socket ID: " + clientSocket);
+                    notifyConnection(true, com.bluelink.util.BluetoothUtils.addressToCode(clientAddr.btAddr));
+    
+                    // 处理客户端连接
+                    executor.submit(() -> handleClient(clientSocket));
+                } else {
+                    if (running) {
+                        // 只有在运行时出错才报错，关闭时出错忽略
+                        // notifyError("Accept 失败: " + lib.WSAGetLastError());
+                        System.out.println("[Server] accept 返回 INVALID_SOCKET, err=" + lib.WSAGetLastError());
+                    }
                 }
             }
+        } catch (Throwable t) {
+            System.err.println("[Server] 严重错误: Server 线程崩溃");
+            t.printStackTrace();
+            notifyError("服务端崩溃: " + t.getMessage());
         }
     }
 
     private void handleClient(int clientSocket) {
-        WinsockNative lib = WinsockNative.INSTANCE;
-        try (com.bluelink.net.jna.JnaSocketInputStream jis = new com.bluelink.net.jna.JnaSocketInputStream(
-                clientSocket);
-                java.io.DataInputStream dis = new java.io.DataInputStream(jis)) {
-
-            while (running) {
-                try {
-                    com.bluelink.net.protocol.ProtocolReader.Packet packet = com.bluelink.net.protocol.ProtocolReader
-                            .readPacket(dis);
-                    if (packet == null) {
-                        break; // 连接断开
-                    }
-
-                    // 判断 packet 类型
-                    // 目前 ProtocolReader 简单的返回了 name 和 data
-                    // 我们可以通过 name 来判断。例如:
-                    // 如果 name 是 "MSG:UUID", 则 data 是文本内容 UTF-8
-                    // 如果 name 是 "filename.txt", 则 data 是文件内容
-                    // 为了区分，我们在发送时制定一种约定。
-
-                    // 约定:
-                    // 文本消息: name = "MSG" (实际上 ProtocolWriter 的 name 字段可以用来传文件名或特殊标识)
-                    // 文件消息: name = "filename.ext"
-
-                    if ("MSG".equals(packet.name)) {
-                        String text = new String(packet.data, "UTF-8");
-                        if (listener != null)
-                            listener.onMessageReceived("Remote", text);
-                    } else {
-                        // 这是一个文件
-                        // 保存到本地
-                        java.io.File downloadDir = new java.io.File(com.bluelink.util.AppConfig.getDownloadPath());
-                        if (!downloadDir.exists())
-                            downloadDir.mkdirs();
-
-                        java.io.File file = new java.io.File(downloadDir, packet.name);
-                        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(file)) {
-                            fos.write(packet.data);
-                        }
-
-                        if (listener != null)
-                            listener.onFileReceived("Remote", file);
-                    }
-
-                } catch (java.io.IOException e) {
-                    // 读取错误或断开
-                    break;
-                }
+        System.out.println("[Server] 开始处理客户端连接: " + clientSocket);
+        try {
+            BluetoothSession session = new BluetoothSession(clientSocket, listener);
+            if (listener != null) {
+                listener.onSessionCreated(session);
             }
+            session.start();
+            System.out.println("[Server] Session 启动成功");
         } catch (Exception e) {
-            notifyError("客户端处理异常: " + e.getMessage());
-        } finally {
-            lib.closesocket(clientSocket);
+            System.err.println("[Server] Session 启动失败: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 

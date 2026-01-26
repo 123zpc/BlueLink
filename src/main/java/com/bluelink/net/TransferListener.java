@@ -40,4 +40,9 @@ public interface TransferListener {
      * @param message 错误信息
      */
     void onError(String message);
+    
+    /**
+     * 当会话建立时调用
+     */
+    default void onSessionCreated(BluetoothSession session) {}
 }

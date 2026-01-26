@@ -91,6 +91,10 @@ public class CodeInputPanel extends JPanel {
                         } else {
                             // 输入完成
                             if (onComplete != null && isComplete()) {
+                                // 简单的防抖动，防止最后一位输入触发多次
+                                if (!fields[5].hasFocus()) return; // 只有焦点在最后一个时才触发（其实也不完全靠谱，交给上层处理更好）
+                                // 让焦点移除，避免重复输入
+                                fields[5].transferFocus();
                                 onComplete.run();
                             }
                         }

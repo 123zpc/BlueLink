@@ -15,7 +15,7 @@ public class DatabaseManager {
     private static final String DB_DIR = com.bluelink.util.AppConfig.APP_DATA_DIR + "/data";
     private static final String DB_NAME = "bluelink";
     // jdbc:h2:file:C:/Users/.../AppData/Roaming/BlueLink/data/bluelink
-    private static final String DB_URL = "jdbc:h2:file:" + DB_DIR + "/" + DB_NAME;
+    private static final String DB_URL = "jdbc:h2:file:" + DB_DIR.replace("\\", "/") + "/" + DB_NAME + ";AUTO_SERVER=TRUE";
     private static final String DB_USER = "sa";
     private static final String DB_PASS = "";
 
@@ -23,7 +23,10 @@ public class DatabaseManager {
         // 确保数据库目录存在
         java.io.File dir = new java.io.File(DB_DIR);
         if (!dir.exists()) {
-            dir.mkdirs();
+            boolean created = dir.mkdirs();
+            if (!created) {
+                System.err.println("无法创建数据库目录: " + DB_DIR);
+            }
         }
 
         try {
@@ -34,6 +37,7 @@ public class DatabaseManager {
     }
 
     public static void initDatabase() {
+        System.out.println("正在初始化数据库: " + DB_URL);
         try (Connection conn = getConnection();
                 Statement stmt = conn.createStatement()) {
 
@@ -52,6 +56,7 @@ public class DatabaseManager {
 
         } catch (SQLException e) {
             e.printStackTrace();
+            throw new RuntimeException("数据库初始化失败", e);
         }
     }
 

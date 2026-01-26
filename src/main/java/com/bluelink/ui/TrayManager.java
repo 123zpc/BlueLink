@@ -13,11 +13,11 @@ import java.awt.event.MouseEvent;
  */
 public class TrayManager {
 
-    private final JFrame frame;
+    private final ModernQQFrame frame;
     private TrayIcon trayIcon;
     private JPopupMenu popupMenu;
 
-    public TrayManager(JFrame frame) {
+    public TrayManager(ModernQQFrame frame) {
         this.frame = frame;
         initTray();
     }

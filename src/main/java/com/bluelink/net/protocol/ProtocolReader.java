@@ -16,8 +16,16 @@ public class ProtocolReader {
     private static final int MAGIC_NUMBER = 0xCAFEBABE;
 
     public static class Packet {
+        public long senderToken;
         public String name;
         public byte[] data;
+    }
+
+    /**
+     * 进度回调接口
+     */
+    public interface ProgressCallback {
+        void onProgress(long senderToken, String name, long current, long total);
     }
 
     /**
@@ -27,6 +35,17 @@ public class ProtocolReader {
      * @return 解析出的 Packet，如果流结束则返回 null
      */
     public static Packet readPacket(DataInputStream dis) throws IOException {
+        return readPacket(dis, null);
+    }
+
+    /**
+     * 从流中读取并解析下一个数据包 (带进度回调)
+     * 
+     * @param dis 数据输入流
+     * @param callback 进度回调
+     * @return 解析出的 Packet，如果流结束则返回 null
+     */
+    public static Packet readPacket(DataInputStream dis, ProgressCallback callback) throws IOException {
         // 1. 读取 Magic
         int magic;
         try {
@@ -41,7 +60,11 @@ public class ProtocolReader {
             throw new IOException("无效的协议魔数: " + Integer.toHexString(magic));
         }
 
-        // 2. 读取名称
+        // 2. 读取 Sender Token (NEW)
+        long senderToken = dis.readLong();
+        // System.out.println("[Protocol] SenderToken: " + senderToken);
+
+        // 3. 读取名称
         int nameLen = dis.readInt();
         System.out.println("[Protocol] NameLen: " + nameLen);
         byte[] nameBytes = new byte[nameLen];
@@ -49,20 +72,44 @@ public class ProtocolReader {
         String name = new String(nameBytes, "UTF-8");
         System.out.println("[Protocol] Name: " + name);
 
-        // 3. 读取大小和 CRC
+        // 4. 读取大小和 CRC
         long originalSize = dis.readLong();
         long compressedSize = dis.readLong(); // NEW
         long receivedCrc = dis.readLong();
         System.out.println(String.format("[Protocol] Header: OrigSize=%d, CompSize=%d, CRC=%d", originalSize, compressedSize, receivedCrc));
 
-        // 4. 读取压缩数据
+        // 5. 读取压缩数据
         // 安全检查: 防止 OOM
         if (compressedSize > 100 * 1024 * 1024) { // 100MB max per packet for safety
             throw new IOException("数据包过大: " + compressedSize);
         }
 
         byte[] compressedData = new byte[(int) compressedSize];
-        dis.readFully(compressedData);
+        
+        // 分块读取以支持进度回调
+        int totalRead = 0;
+        int bufferSize = 8192; // 8KB buffer
+        int remaining = (int) compressedSize;
+        int offset = 0;
+        
+        while (remaining > 0) {
+            int toRead = Math.min(remaining, bufferSize);
+            // 注意: 这里我们直接读入最终的 compressedData 数组
+            int bytesRead = dis.read(compressedData, offset, toRead);
+            
+            if (bytesRead == -1) {
+                throw new IOException("数据包读取未完成，连接可能已断开");
+            }
+            
+            offset += bytesRead;
+            remaining -= bytesRead;
+            totalRead += bytesRead;
+            
+            if (callback != null) {
+                callback.onProgress(senderToken, name, totalRead, compressedSize);
+            }
+        }
+        
         System.out.println("[Protocol] Body 读取完成");
 
         // 5. 解压
@@ -89,6 +136,7 @@ public class ProtocolReader {
         }
 
         Packet packet = new Packet();
+        packet.senderToken = senderToken;
         packet.name = name;
         packet.data = originalData;
         return packet;

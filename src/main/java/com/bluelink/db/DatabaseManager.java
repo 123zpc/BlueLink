@@ -14,8 +14,8 @@ public class DatabaseManager {
     // 使用 AppData 目录存储数据库
     private static final String DB_DIR = com.bluelink.util.AppConfig.APP_DATA_DIR + "/data";
     private static final String DB_NAME = "bluelink";
-    // jdbc:h2:file:C:/Users/.../AppData/Roaming/BlueLink/data/bluelink
-    private static final String DB_URL = "jdbc:h2:file:" + DB_DIR.replace("\\", "/") + "/" + DB_NAME + ";AUTO_SERVER=TRUE";
+    // jdbc:h2:file:C:/Users/.../AppData/Roaming/BlueLink/data/bluelink;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1
+    private static final String DB_URL = "jdbc:h2:file:" + DB_DIR.replace("\\", "/") + "/" + DB_NAME + ";AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1";
     private static final String DB_USER = "sa";
     private static final String DB_PASS = "";
 

@@ -77,6 +77,14 @@ public class BubblePanel extends JPanel {
         repaint();
     }
 
+    // 进度条状态 (-1 表示不显示)
+    private float progress = -1f;
+
+    public void setProgress(float progress) {
+        this.progress = progress;
+        repaint();
+    }
+
     @Override
     protected void paintComponent(Graphics g) {
         Graphics2D g2 = (Graphics2D) g;
@@ -98,11 +106,35 @@ public class BubblePanel extends JPanel {
         if (customBackground != null) {
             g2.setColor(customBackground);
         } else if (isSender) {
-            g2.setColor(Color.WHITE); // 自己: 白色
+            g2.setColor(Color.WHITE);
         } else {
-            g2.setColor(UiUtils.COLOR_PRIMARY); // 对方: 蓝色
+            g2.setColor(UiUtils.COLOR_PRIMARY);
         }
         g2.fillRoundRect(x, y, w, h, RADIUS, RADIUS);
+
+        // 绘制进度条
+        if (progress >= 0 && progress <= 1.0f) {
+            // 使用裁剪确保进度条不超出圆角
+            Shape originalClip = g2.getClip();
+            g2.setClip(new java.awt.geom.RoundRectangle2D.Float(x, y, w, h, RADIUS, RADIUS));
+            
+            // 进度条颜色 (半透明白色或强调色)
+            if (isSender) {
+                g2.setColor(new Color(46, 204, 113, 180)); // Green on White
+            } else {
+                g2.setColor(new Color(255, 255, 255, 128)); // White on Blue
+            }
+            
+            // 底部进度条模式
+            // int barHeight = 4;
+            // g2.fillRect(x, y + h - barHeight, (int)(w * progress), barHeight);
+            
+            // 全背景覆盖模式 (类似传输遮罩)
+            // 从左到右填充
+            g2.fillRect(x, y, (int)(w * progress), h);
+            
+            g2.setClip(originalClip);
+        }
 
         // 绘制边框
         if (customBorderColor != null) {

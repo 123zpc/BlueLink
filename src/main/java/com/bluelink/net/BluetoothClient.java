@@ -144,7 +144,7 @@ public class BluetoothClient {
             throw new IOException("未连接");
         }
         System.out.println("[Client] 准备发送消息: " + message);
-        byte[] packet = ProtocolWriter.createPacket("MSG", message.getBytes("UTF-8"));
+        byte[] packet = ProtocolWriter.createPacket(0L, "MSG", message.getBytes("UTF-8"));
         outputStream.write(packet);
         outputStream.flush();
     }
@@ -158,7 +158,7 @@ public class BluetoothClient {
         try (FileInputStream fis = new FileInputStream(file)) {
             fis.read(fileData);
         }
-        byte[] packet = ProtocolWriter.createPacket(file.getName(), fileData);
+        byte[] packet = ProtocolWriter.createPacket(0L, file.getName(), fileData);
         outputStream.write(packet);
         outputStream.flush();
     }

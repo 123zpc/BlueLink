@@ -52,6 +52,11 @@ public class ModernQQFrame extends JFrame {
     private com.bluelink.net.BluetoothServer server;
     private com.bluelink.net.BluetoothClient client;
     private com.bluelink.net.BluetoothSession currentSession;
+    
+    // 活跃的文件传输气泡 (fileName -> bubble)
+    private java.util.Map<String, com.bluelink.ui.bubble.BubblePanel> activeFileBubbles = new java.util.concurrent.ConcurrentHashMap<>();
+    // 正在发送的文件气泡 (fileName -> bubble)
+    private java.util.Map<String, com.bluelink.ui.bubble.BubblePanel> sendingFileBubbles = new java.util.concurrent.ConcurrentHashMap<>();
 
     public ModernQQFrame() {
         initUI();
@@ -91,6 +96,27 @@ public class ModernQQFrame extends JFrame {
         client.setListener(new TransferListenerImpl());
     }
 
+    private com.bluelink.ui.bubble.BubblePanel renderReceivingFileBubble(String fileName) {
+        // 创建接收中气泡 (使用新方法，文字显示"等待接收...")
+        com.bluelink.ui.bubble.BubblePanel bubble = com.bluelink.ui.bubble.BubbleFactory.createReceivingFileBubble(fileName);
+        // 初始化进度
+        bubble.setProgress(0f);
+        
+        // 包装
+        JPanel wrapper = new JPanel(new MigLayout("insets 2, fillx, gap 0", "[grow]", "[]"));
+        wrapper.setOpaque(false);
+        String constraints = "al left, width ::80%"; 
+        wrapper.add(bubble, constraints);
+        
+        // 添加到聊天区
+        chatArea.add(wrapper, "growx, wrap");
+        chatArea.revalidate();
+        chatArea.repaint();
+        scrollToBottom();
+        
+        return bubble;
+    }
+    
     // 网络事件处理
     private class TransferListenerImpl implements com.bluelink.net.TransferListener {
         @Override
@@ -102,16 +128,78 @@ public class ModernQQFrame extends JFrame {
         }
 
         @Override
-        public void onFileReceived(String sender, File file) {
+        public void onFileReceived(String sender, File file, String originalName) {
             SwingUtilities.invokeLater(() -> {
+                System.out.println("[UI] FileReceived: " + originalName + " -> " + file.getAbsolutePath());
+                
+                // 1. 移除进度气泡
+                com.bluelink.ui.bubble.BubblePanel bubble = activeFileBubbles.remove(originalName);
+                if (bubble != null) {
+                    System.out.println("[UI] Removing progress bubble for: " + originalName);
+                    // 移除旧组件 (bubble 的父容器是 wrapper)
+                    java.awt.Container wrapper = bubble.getParent();
+                    if (wrapper != null) {
+                        chatArea.remove(wrapper);
+                    } else {
+                        System.err.println("[UI] Warning: Bubble parent is null!");
+                    }
+                } else {
+                    System.out.println("[UI] No progress bubble found for: " + originalName);
+                    // 尝试遍历查找 (防御性编程)
+                    // 有时候可能是 key 的问题？虽然理论上不应该
+                }
+                
+                // 2. 添加正式气泡 (这会保存到数据库)
                 addFileMessage(false, file);
                 trayManager.showNotification("收到文件", file.getName());
+                
+                // 3. 刷新界面
+                chatArea.revalidate();
+                chatArea.repaint();
+                scrollToBottom();
             });
         }
 
         @Override
-        public void onTransferProgress(String fileName, long current, long total) {
-            // 暂不实现进度条
+        public void onTransferProgress(String fileName, long current, long total, boolean isReceive) {
+            SwingUtilities.invokeLater(() -> {
+                com.bluelink.ui.bubble.BubblePanel bubble;
+
+                if (isReceive) {
+                    bubble = activeFileBubbles.get(fileName);
+                    if (bubble == null) {
+                        bubble = renderReceivingFileBubble(fileName);
+                        activeFileBubbles.put(fileName, bubble);
+                    }
+                    
+                    String progressText = String.format("接收中 %s / %s", 
+                        com.bluelink.ui.bubble.BubbleFactory.formatSize(current),
+                        com.bluelink.ui.bubble.BubbleFactory.formatSize(total));
+                    com.bluelink.ui.bubble.BubbleFactory.updateBubbleSizeText(bubble, progressText);
+                } else {
+                    bubble = sendingFileBubbles.get(fileName);
+                    if (bubble != null) {
+                        String progressText = String.format("发送中 %s / %s", 
+                            com.bluelink.ui.bubble.BubbleFactory.formatSize(current),
+                            com.bluelink.ui.bubble.BubbleFactory.formatSize(total));
+                        com.bluelink.ui.bubble.BubbleFactory.updateBubbleSizeText(bubble, progressText);
+                    }
+                }
+                
+                if (bubble != null) {
+                    float p = (float) current / total;
+                    p = Math.max(0f, Math.min(1f, p));
+                    bubble.setProgress(p);
+
+                    // 发送完成后清理
+                    if (!isReceive && current >= total) {
+                        sendingFileBubbles.remove(fileName);
+                        // 恢复显示文件大小
+                        com.bluelink.ui.bubble.BubbleFactory.updateBubbleSizeText(bubble, com.bluelink.ui.bubble.BubbleFactory.formatSize(total));
+                        bubble.setProgress(-1f); // 隐藏进度条
+                    }
+                }
+            });
         }
 
         @Override
@@ -393,46 +481,52 @@ public class ModernQQFrame extends JFrame {
     }
 
     private void performFileSend(File file) {
-        // 1. 初始化并保存 (status=SENDING) -> 获取 ID
-        com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("FILE", true,
-                file.getAbsolutePath(), file.length());
-        item.status = "SENDING";
-        com.bluelink.db.TransferDao.save(item);
-
-        // 2. Optimistic UI
-        com.bluelink.ui.bubble.BubblePanel bubble = renderFileBubble(true, file);
-
-        // 强制滚到底部
-        scrollToBottom();
-
-        // 3. 异步网络发送
+        // 将耗时的数据库操作移至后台线程，避免阻塞 UI 线程 (EDT) 导致卡死
         new Thread(() -> {
-            try {
-                if (currentSession != null) {
-                    currentSession.sendFile(file);
-                } else {
-                    client.sendFile(file);
-                }
+            // 1. 初始化并保存 (status=SENDING) -> 获取 ID
+            com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("FILE", true,
+                    file.getAbsolutePath(), file.length());
+            item.status = "SENDING";
+            com.bluelink.db.TransferDao.save(item);
 
-                // 发送成功: 更新数据库状态 (Status=SUCCESS)
-                if (item.id > 0) {
-                    com.bluelink.db.TransferDao.updateStatus(item.id, "SUCCESS");
-                }
+            // 2. 回到 EDT 更新 UI
+            SwingUtilities.invokeLater(() -> {
+                // Optimistic UI
+                com.bluelink.ui.bubble.BubblePanel bubble = renderFileBubble(true, file);
 
-            } catch (Exception e) {
-                // 发送失败: 更新 UI 和 数据库
-                SwingUtilities.invokeLater(() -> {
-                    if (bubble != null) {
-                        bubble.setStatus(true); // 显示失败红点
-                        // 绑定重试 action
-                        bubble.setRetryAction(() -> performResend(item, bubble));
+                // 强制滚到底部
+                scrollToBottom();
+
+                // 3. 启动发送线程 (异步网络发送)
+                new Thread(() -> {
+                    try {
+                        if (currentSession != null) {
+                            currentSession.sendFile(file);
+                        } else {
+                            client.sendFile(file);
+                        }
+
+                        // 发送成功: 更新数据库状态 (Status=SUCCESS)
+                        if (item.id > 0) {
+                            com.bluelink.db.TransferDao.updateStatus(item.id, "SUCCESS");
+                        }
+
+                    } catch (Exception e) {
+                        // 发送失败: 更新 UI 和 数据库
+                        SwingUtilities.invokeLater(() -> {
+                            if (bubble != null) {
+                                bubble.setStatus(true); // 显示失败红点
+                                // 绑定重试 action
+                                bubble.setRetryAction(() -> performResend(item, bubble));
+                            }
+                        });
+
+                        if (item.id > 0) {
+                            com.bluelink.db.TransferDao.updateStatus(item.id, "FAILED");
+                        }
                     }
-                });
-
-                if (item.id > 0) {
-                    com.bluelink.db.TransferDao.updateStatus(item.id, "FAILED");
-                }
-            }
+                }).start();
+            });
         }).start();
     }
 
@@ -1358,6 +1452,12 @@ public class ModernQQFrame extends JFrame {
         wrapper.setOpaque(false);
         com.bluelink.ui.bubble.BubblePanel bubble = com.bluelink.ui.bubble.BubbleFactory.createFileBubble(isSender,
                 file);
+
+        if (isSender) {
+            sendingFileBubbles.put(file.getName(), bubble);
+            bubble.setProgress(0f);
+        }
+
         String constraints = isSender ? "al right, width ::80%" : "al left, width ::80%";
         wrapper.add(bubble, constraints);
 

@@ -20,6 +20,7 @@ public class BluetoothSession {
     private final JnaSocketInputStream inputStream;
     private final JnaSocketOutputStream outputStream;
     private final DataInputStream dataInputStream;
+    private final long localToken = new java.util.Random().nextLong(); // 用于识别本机发送的包 (防止 Echo)
     private volatile boolean running = true;
     private TransferListener listener;
     private Thread readThread;
@@ -38,14 +39,29 @@ public class BluetoothSession {
     }
 
     private void readLoop() {
-        System.out.println("[Session] 开始读取循环");
+        System.out.println("[Session] 开始读取循环, LocalToken=" + localToken);
         while (running) {
             try {
-                ProtocolReader.Packet packet = ProtocolReader.readPacket(dataInputStream);
+                ProtocolReader.Packet packet = ProtocolReader.readPacket(dataInputStream, (senderToken, fileName, current, total) -> {
+                    // 如果是自己发的包 (Echo)，则忽略进度更新
+                    if (senderToken == localToken) {
+                        return;
+                    }
+                    if (listener != null && !"MSG".equals(fileName)) {
+                        listener.onTransferProgress(fileName, current, total, true);
+                    }
+                });
+                
                 if (packet == null) {
                     System.out.println("[Session] 读取到 EOF，连接断开");
                     close();
                     break;
+                }
+
+                // 如果是自己发的包 (Echo)，则完全忽略
+                if (packet.senderToken == localToken) {
+                    System.out.println("[Session] 忽略 Echo 包: " + packet.name);
+                    continue;
                 }
 
                 if ("MSG".equals(packet.name)) {
@@ -80,7 +96,7 @@ public class BluetoothSession {
 
                     java.nio.file.Files.write(file.toPath(), packet.data);
                     if (listener != null) {
-                        listener.onFileReceived("Remote", file);
+                        listener.onFileReceived("Remote", file, packet.name);
                     }
                 }
 
@@ -100,7 +116,7 @@ public class BluetoothSession {
     public void sendMessage(String message) throws IOException {
         if (!running) throw new IOException("会话已关闭");
         System.out.println("[Session] 发送消息: " + message);
-        byte[] packet = ProtocolWriter.createPacket("MSG", message.getBytes("UTF-8"));
+        byte[] packet = ProtocolWriter.createPacket(localToken, "MSG", message.getBytes("UTF-8"));
         outputStream.write(packet);
         outputStream.flush();
     }
@@ -116,12 +132,25 @@ public class BluetoothSession {
             fis.read(fileData);
         }
 
-        byte[] packet = ProtocolWriter.createPacket(file.getName(), fileData);
-        outputStream.write(packet);
-        outputStream.flush();
+        byte[] packet = ProtocolWriter.createPacket(localToken, file.getName(), fileData);
         
-        if (listener != null)
-            listener.onTransferProgress(file.getName(), file.length(), file.length());
+        // 分块写入以支持发送进度
+        int offset = 0;
+        int bufferSize = 8192; // 8KB
+        int total = packet.length;
+        
+        while (offset < total) {
+            int toWrite = Math.min(total - offset, bufferSize);
+            outputStream.write(packet, offset, toWrite);
+            offset += toWrite;
+            
+            // 发送进度更新 (注意：这里的 total 是包总大小，包含压缩数据和头信息)
+            // 用户更关心的是文件传输的百分比，所以直接用 packet 的发送比例即可
+            if (listener != null) {
+                listener.onTransferProgress(file.getName(), offset, total, false);
+            }
+        }
+        outputStream.flush();
     }
 
     public void close() {

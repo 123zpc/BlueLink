@@ -17,11 +17,9 @@ public class ProtocolWriter {
 
     /**
      * 封装数据包
-     * 结构: [Magic 4][NameLen 4][Name Var][OriginalSize 8][CRC32 8][GZIP_Data Var]
-     * 注意：为了简化，这里先在内存中构建完整包，大文件传输时应流式处理。
-     * 但考虑到 JNA send 接口通常处理 byte[]，这里先实现 byte[] 生成。
+     * 结构: [Magic 4][SenderToken 8][NameLen 4][Name Var][OriginalSize 8][CompSize 8][CRC32 8][GZIP_Data Var]
      */
-    public static byte[] createPacket(String name, byte[] data) throws IOException {
+    public static byte[] createPacket(long senderToken, String name, byte[] data) throws IOException {
         System.out.println("[ProtocolWriter] 创建数据包: " + name + ", 数据大小: " + data.length);
         // 1. 压缩数据
         ByteArrayOutputStream compressedBaos = new ByteArrayOutputStream();
@@ -40,11 +38,12 @@ public class ProtocolWriter {
         DataOutputStream dos = new DataOutputStream(finalBaos);
 
         dos.writeInt(MAGIC_NUMBER); // Magic
+        dos.writeLong(senderToken); // Sender Token (NEW)
         byte[] nameBytes = name.getBytes("UTF-8");
         dos.writeInt(nameBytes.length); // NameLen
         dos.write(nameBytes); // Name
         dos.writeLong(data.length); // OriginalSize
-        dos.writeLong(compressedData.length); // CompressedSize (Fix: Missing in previous version)
+        dos.writeLong(compressedData.length); // CompressedSize
         dos.writeLong(crcValue); // CRC32
         dos.write(compressedData); // GZIP_Data
 

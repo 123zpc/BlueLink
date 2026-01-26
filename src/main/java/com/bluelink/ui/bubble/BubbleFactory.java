@@ -149,6 +149,9 @@ public class BubbleFactory {
         JLabel sizeLabel = new JLabel(formatSize(file.length()));
         sizeLabel.setFont(UiUtils.FONT_NORMAL.deriveFont(10f));
         sizeLabel.setForeground(Color.GRAY);
+        
+        // 保存引用以便后续更新 (用于接收进度显示)
+        filePanel.putClientProperty("sizeLabel", sizeLabel);
 
         textPanel.add(nameLabel);
         textPanel.add(sizeLabel);
@@ -251,7 +254,60 @@ public class BubbleFactory {
         return new BubblePanel(isSender, textArea);
     }
 
-    private static String formatSize(long size) {
+    /**
+     * 创建接收中的文件气泡
+     */
+    public static BubblePanel createReceivingFileBubble(String fileName) {
+        // 构造临时文件对象 (仅用于获取图标)
+        File file = new File(fileName);
+        BubblePanel bubble = createFileBubble(false, file);
+        
+        // 修改文字为 "接收中..."
+        updateBubbleSizeText(bubble, "等待接收...");
+        
+        // 禁用点击事件 (或者改为显示提示)
+        // BubblePanel 内部已经有 MouseListener 处理重试，这里不需要额外处理
+        // 但我们需要禁用内部 filePanel 的菜单或点击打开逻辑?
+        // 目前 filePanel 的菜单是后来绑定的，我们可以移除或者不绑定
+        // 上面的 createFileBubble 已经绑定了菜单。
+        // 我们可以重新设置一个空的菜单或者 null
+        Component content = ((JPanel)bubble.getComponent(0)).getComponent(0); // BubblePanel -> container -> content(filePanel)
+        // 结构: BubblePanel -> container (BorderLayout) -> content (Center)
+        // container 是 BubblePanel 构造函数里创建的
+        // 让我们看看 BubblePanel 的结构
+        
+        // 简单起见，我们假设用户点击无效文件也没关系 (系统可能打不开)
+        // 或者我们可以获取 filePanel 并禁用
+        
+        return bubble;
+    }
+    
+    /**
+     * 更新气泡的大小/状态文字
+     */
+    public static void updateBubbleSizeText(BubblePanel bubble, String text) {
+        try {
+            // 深入查找 sizeLabel
+            // BubblePanel -> container -> filePanel
+            // container 是 BubblePanel 的唯一子组件 (index 0, 如果没有其他组件)
+            // 让我们遍历查找 putClientProperty 的组件
+            
+            Component container = bubble.getComponent(0);
+            if (container instanceof Container) {
+                Component filePanel = ((Container)container).getComponent(0);
+                if (filePanel instanceof JComponent) {
+                    JLabel sizeLabel = (JLabel) ((JComponent)filePanel).getClientProperty("sizeLabel");
+                    if (sizeLabel != null) {
+                        sizeLabel.setText(text);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static String formatSize(long size) {
         if (size < 1024)
             return size + " B";
         int exp = (int) (Math.log(size) / Math.log(1024));

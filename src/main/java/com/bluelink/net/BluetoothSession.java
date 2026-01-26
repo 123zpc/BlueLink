@@ -54,15 +54,33 @@ public class BluetoothSession {
                         listener.onMessageReceived("Remote", text);
                     }
                 } else {
-                    // 文件暂未实现保存逻辑，先通知
-                    // 实际项目中需要将 byte[] 保存为文件
-                    // 这里简化，假设 data 就是文件内容（注意内存限制）
-                    // 现在的 Packet.data 已经在内存里了
-                    // 我们可以临时保存到临时目录
-                    File tempFile = File.createTempFile("bluelink_", "_" + packet.name);
-                    java.nio.file.Files.write(tempFile.toPath(), packet.data);
+                    // 保存文件到配置的下载目录
+                    String downloadDir = com.bluelink.util.AppConfig.getDownloadPath();
+                    File dir = new File(downloadDir);
+                    if (!dir.exists()) {
+                        dir.mkdirs();
+                    }
+                    
+                    // 处理重名文件：filename.txt -> filename(1).txt
+                    File file = new File(dir, packet.name);
+                    String fileName = packet.name;
+                    String baseName = fileName;
+                    String ext = "";
+                    int dotIndex = fileName.lastIndexOf('.');
+                    if (dotIndex > 0) {
+                        baseName = fileName.substring(0, dotIndex);
+                        ext = fileName.substring(dotIndex);
+                    }
+                    
+                    int counter = 1;
+                    while (file.exists()) {
+                        file = new File(dir, baseName + "(" + counter + ")" + ext);
+                        counter++;
+                    }
+
+                    java.nio.file.Files.write(file.toPath(), packet.data);
                     if (listener != null) {
-                        listener.onFileReceived("Remote", tempFile);
+                        listener.onFileReceived("Remote", file);
                     }
                 }
 

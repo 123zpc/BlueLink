@@ -60,11 +60,24 @@ public class ModernQQFrame extends JFrame {
         
         // 注册关闭钩子，确保进程结束时清理资源
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.println("[App] 正在关闭，清理资源...");
-            if (server != null) server.stop();
-            if (client != null) client.close();
-            if (currentSession != null) currentSession.close();
+            shutdown();
         }));
+    }
+
+    /**
+     * 关闭应用并清理资源
+     */
+    public void shutdown() {
+        System.out.println("[App] 正在关闭，清理资源...");
+        if (server != null) {
+            try { server.stop(); } catch (Throwable t) {}
+        }
+        if (client != null) {
+            try { client.close(); } catch (Throwable t) {}
+        }
+        if (currentSession != null) {
+            try { currentSession.close(); } catch (Throwable t) {}
+        }
     }
 
     private void initNetwork() {

@@ -68,6 +68,7 @@ public class TrayManager {
             UIManager.put("OptionPane.noButtonText", "No");
 
             if (result == JOptionPane.YES_OPTION) {
+                frame.shutdown();
                 System.exit(0);
             }
         });

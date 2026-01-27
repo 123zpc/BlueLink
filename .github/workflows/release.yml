@@ -13,53 +13,43 @@ jobs:
       contents: write
 
     steps:
-    # 1️⃣ Checkout
     - name: Checkout
       uses: actions/checkout@v4
 
-    # 2️⃣ Java 17
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
 
-    # 3️⃣ 版本号 v1.0.0 -> 1.0.0
     - name: Get version
       shell: pwsh
       run: |
         $v = "${{ github.ref_name }}".TrimStart("v")
         echo "APP_VERSION=$v" >> $env:GITHUB_ENV
 
-    # 4️⃣ 映射短路径（防 32K）
     - name: Map workspace to short path
       shell: pwsh
       run: |
         subst W: $env:GITHUB_WORKSPACE
 
-    # 5️⃣ Maven 构建（短路径仓库）
     - name: Build with Maven
       shell: cmd
       run: |
         cd /d W:\
         mvn clean package -DskipTests -Dmaven.repo.local=W:\.m2
 
-    # 6️⃣ 找到真正的 jar
     - name: Locate runnable jar
       shell: pwsh
       run: |
         $jar = Get-ChildItem W:\target\*.jar |
-               Where-Object { $_.Name -notmatch 'original|sources|javadoc' } |
-               Select-Object -First 1
+          Where-Object { $_.Name -notmatch 'original|sources|javadoc' } |
+          Select-Object -First 1
 
-        if (-not $jar) {
-          Write-Error "No runnable jar found"
-          exit 1
-        }
+        if (-not $jar) { exit 1 }
 
         echo "JAR_NAME=$($jar.Name)" >> $env:GITHUB_ENV
 
-    # 7️⃣ 生成 app-image（给 Inno 用）
     - name: Build app-image
       shell: pwsh
       run: |
@@ -75,47 +65,46 @@ jobs:
           --main-class com.bluelink.Main `
           --icon W:\src\main\resources\app_icon.ico `
           --app-version ${{ env.APP_VERSION }} `
-          --vendor "BlueLink" `
+          --vendor BlueLink `
           --dest W:\app-image
 
-    # 8️⃣ 安装 Inno Setup
     - name: Install Inno Setup
       run: choco install innosetup --no-progress
 
-    # 9️⃣ 生成 Inno EXE（中文 + 图标）
+    # ✅ 关键修复点：不用 PowerShell here-string
     - name: Build Inno Setup EXE
-      shell: pwsh
+      shell: cmd
       run: |
-        $iss = @"
-[Setup]
-AppName=BlueLink
-AppVersion=${{ env.APP_VERSION }}
-DefaultDirName={autopf}\BlueLink
-OutputDir=W:\release
-OutputBaseFilename=BlueLink_Setup_${{ env.APP_VERSION }}
-SetupIconFile=W:\src\main\resources\app_icon.ico
-WizardStyle=modern
-Compression=lzma2
-SolidCompression=yes
+        echo [Setup] > W:\setup.iss
+        echo AppName=BlueLink >> W:\setup.iss
+        echo AppVersion=%APP_VERSION% >> W:\setup.iss
+        echo DefaultDirName={autopf}\BlueLink >> W:\setup.iss
+        echo OutputDir=W:\release >> W:\setup.iss
+        echo OutputBaseFilename=BlueLink_Setup_%APP_VERSION% >> W:\setup.iss
+        echo SetupIconFile=W:\src\main\resources\app_icon.ico >> W:\setup.iss
+        echo WizardStyle=modern >> W:\setup.iss
+        echo Compression=lzma2 >> W:\setup.iss
+        echo SolidCompression=yes >> W:\setup.iss
 
-[Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+        echo. >> W:\setup.iss
+        echo [Languages] >> W:\setup.iss
+        echo Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl" >> W:\setup.iss
 
-[Files]
-Source: "W:\app-image\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
+        echo. >> W:\setup.iss
+        echo [Files] >> W:\setup.iss
+        echo Source: "W:\app-image\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs >> W:\setup.iss
 
-[Icons]
-Name: "{autoprograms}\BlueLink"; Filename: "{app}\BlueLink.exe"
-Name: "{autodesktop}\BlueLink"; Filename: "{app}\BlueLink.exe"
+        echo. >> W:\setup.iss
+        echo [Icons] >> W:\setup.iss
+        echo Name: "{autoprograms}\BlueLink"; Filename: "{app}\BlueLink.exe" >> W:\setup.iss
+        echo Name: "{autodesktop}\BlueLink"; Filename: "{app}\BlueLink.exe" >> W:\setup.iss
 
-[Run]
-Filename: "{app}\BlueLink.exe"; Flags: nowait postinstall
-"@
+        echo. >> W:\setup.iss
+        echo [Run] >> W:\setup.iss
+        echo Filename: "{app}\BlueLink.exe"; Flags: nowait postinstall >> W:\setup.iss
 
-        $iss | Out-File W:\setup.iss -Encoding UTF8
-        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" W:\setup.iss
+        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" W:\setup.iss
 
-    # 🔟 构建 MSI（企业版）
     - name: Build MSI
       shell: pwsh
       run: |
@@ -127,13 +116,12 @@ Filename: "{app}\BlueLink.exe"; Flags: nowait postinstall
           --main-class com.bluelink.Main `
           --icon W:\src\main\resources\app_icon.ico `
           --app-version ${{ env.APP_VERSION }} `
-          --vendor "BlueLink" `
+          --vendor BlueLink `
           --win-menu `
           --win-shortcut `
           --win-dir-chooser `
           --dest W:\release
 
-    # 1️⃣1️⃣ 发布 Release
     - name: Upload Release Assets
       uses: softprops/action-gh-release@v2
       with:

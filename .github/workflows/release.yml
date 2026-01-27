@@ -1,9 +1,9 @@
-name: Build & Release Windows (Inno EXE + MSI)
+name: Windows Release (MSI + EXE)
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -16,11 +16,16 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Set up JDK 17
+    - name: Map workspace to W
+      shell: pwsh
+      run: subst W: $env:GITHUB_WORKSPACE
+
+    - name: Setup JDK 17
       uses: actions/setup-java@v4
       with:
-        java-version: '17'
-        distribution: 'temurin'
+        java-version: "17"
+        distribution: "temurin"
+        cache: maven
 
     - name: Get version
       shell: pwsh
@@ -28,105 +33,88 @@ jobs:
         $v = "${{ github.ref_name }}".TrimStart("v")
         echo "APP_VERSION=$v" >> $env:GITHUB_ENV
 
-    - name: Map workspace to short path
+    - name: Build jar
+      shell: pwsh
+      run: mvn clean package -DskipTests
+      working-directory: W:\
+
+    - name: Prepare jpackage input
       shell: pwsh
       run: |
-        subst W: $env:GITHUB_WORKSPACE
+        rmdir C:\jpt -Recurse -Force -ErrorAction SilentlyContinue
+        mkdir C:\jpt | Out-Null
+        copy W:\target\*.jar C:\jpt\
 
-    - name: Build with Maven
-      shell: cmd
-      run: |
-        cd /d W:\
-        mvn clean package -DskipTests -Dmaven.repo.local=W:\.m2
-
-    - name: Locate runnable jar
+    - name: Build MSI (jpackage)
       shell: pwsh
       run: |
-        $jar = Get-ChildItem W:\target\*.jar |
-          Where-Object { $_.Name -notmatch 'original|sources|javadoc' } |
-          Select-Object -First 1
-
-        if (-not $jar) { exit 1 }
-
-        echo "JAR_NAME=$($jar.Name)" >> $env:GITHUB_ENV
-
-    - name: Build app-image
-      shell: pwsh
-      run: |
-        Remove-Item C:\jpt -Recurse -Force -ErrorAction SilentlyContinue
-        New-Item C:\jpt -ItemType Directory | Out-Null
-        Copy-Item W:\target\${{ env.JAR_NAME }} C:\jpt\
-
-        jpackage `
-          --type app-image `
-          --name BlueLink `
-          --input C:\jpt `
-          --main-jar ${{ env.JAR_NAME }} `
-          --main-class com.bluelink.Main `
-          --icon W:\src\main\resources\app_icon.ico `
-          --app-version ${{ env.APP_VERSION }} `
-          --vendor BlueLink `
-          --dest W:\app-image
+        jpackage ^
+          --type msi ^
+          --name BlueLink ^
+          --input C:\jpt ^
+          --main-jar BlueLink-%APP_VERSION%.jar ^
+          --main-class com.bluelink.Main ^
+          --icon W:\src\main\resources\app_icon.ico ^
+          --app-version %APP_VERSION% ^
+          --vendor BlueLink ^
+          --win-menu ^
+          --win-shortcut ^
+          --win-dir-chooser ^
+          --dest W:\release
+      env:
+        APP_VERSION: ${{ env.APP_VERSION }}
 
     - name: Install Inno Setup
+      shell: pwsh
       run: choco install innosetup --no-progress
 
-    # ✅ 关键修复点：不用 PowerShell here-string
-    - name: Build Inno Setup EXE
-      shell: cmd
+    - name: Generate Inno Setup script
+      shell: pwsh
       run: |
         echo [Setup] > W:\setup.iss
+        echo AppId={{D3776518-2023-4422-A938-BLUELINK123} >> W:\setup.iss
         echo AppName=BlueLink >> W:\setup.iss
         echo AppVersion=%APP_VERSION% >> W:\setup.iss
+        echo AppPublisher=BlueLink >> W:\setup.iss
         echo DefaultDirName={autopf}\BlueLink >> W:\setup.iss
         echo OutputDir=W:\release >> W:\setup.iss
         echo OutputBaseFilename=BlueLink_Setup_%APP_VERSION% >> W:\setup.iss
         echo SetupIconFile=W:\src\main\resources\app_icon.ico >> W:\setup.iss
-        echo WizardStyle=modern >> W:\setup.iss
         echo Compression=lzma2 >> W:\setup.iss
         echo SolidCompression=yes >> W:\setup.iss
-
+        echo WizardStyle=modern >> W:\setup.iss
         echo. >> W:\setup.iss
         echo [Languages] >> W:\setup.iss
-        echo Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl" >> W:\setup.iss
-
+        echo Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl" >> W:\setup.iss
         echo. >> W:\setup.iss
         echo [Files] >> W:\setup.iss
-        echo Source: "W:\app-image\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs >> W:\setup.iss
-
+        echo Source: "W:\target\image\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs >> W:\setup.iss
         echo. >> W:\setup.iss
         echo [Icons] >> W:\setup.iss
         echo Name: "{autoprograms}\BlueLink"; Filename: "{app}\BlueLink.exe" >> W:\setup.iss
         echo Name: "{autodesktop}\BlueLink"; Filename: "{app}\BlueLink.exe" >> W:\setup.iss
-
         echo. >> W:\setup.iss
         echo [Run] >> W:\setup.iss
-        echo Filename: "{app}\BlueLink.exe"; Flags: nowait postinstall >> W:\setup.iss
+        echo Filename: "{app}\BlueLink.exe"; Description: "启动 BlueLink"; Flags: nowait postinstall skipifsilent >> W:\setup.iss
+      env:
+        APP_VERSION: ${{ env.APP_VERSION }}
 
-        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" W:\setup.iss
-
-    - name: Build MSI
+    - name: Build EXE (Inno Setup)
       shell: pwsh
-      run: |
-        jpackage `
-          --type msi `
-          --name BlueLink `
-          --input C:\jpt `
-          --main-jar ${{ env.JAR_NAME }} `
-          --main-class com.bluelink.Main `
-          --icon W:\src\main\resources\app_icon.ico `
-          --app-version ${{ env.APP_VERSION }} `
-          --vendor BlueLink `
-          --win-menu `
-          --win-shortcut `
-          --win-dir-chooser `
-          --dest W:\release
+      run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" W:\setup.iss'
 
-    - name: Upload Release Assets
+    - name: Upload Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          release/*.exe
           release/*.msi
+          release/*.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Cleanup
+      if: always()
+      shell: pwsh
+      run: |
+        subst W: /d
+        rmdir C:\jpt -Recurse -Force -ErrorAction SilentlyContinue

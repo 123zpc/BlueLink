@@ -1,4 +1,4 @@
-name: Build and Release Windows
+name: Build & Release Windows (EXE + MSI)
 
 on:
   push:
@@ -13,110 +13,89 @@ jobs:
       contents: write
 
     steps:
-    # ------------------------------------------------------------
-    # 1. Checkout
-    # ------------------------------------------------------------
-    - uses: actions/checkout@v4
+    # 1️⃣ Checkout
+    - name: Checkout
+      uses: actions/checkout@v4
 
-    # ------------------------------------------------------------
-    # 2. JDK 17
-    # ------------------------------------------------------------
-    - uses: actions/setup-java@v4
+    # 2️⃣ Java 17
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
-        cache: 'maven'
 
-    # ------------------------------------------------------------
-    # 3. Maven Build
-    # ------------------------------------------------------------
-    - name: Build with Maven
-      run: mvn -B clean package -DskipTests
-
-    # ------------------------------------------------------------
-    # 4. 解析版本号
-    # ------------------------------------------------------------
-    - name: Get Version
+    # 3️⃣ 解析版本号（v1.0.0 → 1.0.0）
+    - name: Get version
       shell: pwsh
       run: |
-        $v = "${{ github.ref_name }}".TrimStart('v')
-        "APP_VERSION=$v" | Out-File $env:GITHUB_ENV -Encoding utf8
+        $v = "${{ github.ref_name }}".TrimStart("v")
+        echo "APP_VERSION=$v" >> $env:GITHUB_ENV
 
-    # ------------------------------------------------------------
-    # 5. 准备“极短 & 干净”的 jpackage 输入目录（核心）
-    # ------------------------------------------------------------
+    # 4️⃣ 使用短路径（subst）防止 32K 路径炸裂
+    - name: Map workspace to short path
+      shell: pwsh
+      run: |
+        subst W: $env:GITHUB_WORKSPACE
+        echo "W: mapped"
+
+    # 5️⃣ Maven 构建（本地仓库也放短路径）
+    - name: Build with Maven
+      shell: pwsh
+      run: |
+        cd W:\
+        mvn clean package -DskipTests -Dmaven.repo.local=W:\.m2
+
+    # 6️⃣ 准备 jpackage 输入（只放 jar，极短路径）
     - name: Prepare jpackage input
       shell: pwsh
       run: |
-        $base = "C:\pkg"
-        $app  = "$base\app"
-        $out  = "$base\out"
-        $tmp  = "$base\tmp"
+        Remove-Item C:\jpt -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item C:\jpt -ItemType Directory | Out-Null
+        Copy-Item W:\target\BlueLink-${{ env.APP_VERSION }}.jar C:\jpt\
 
-        Remove-Item $base -Recurse -Force -ErrorAction SilentlyContinue
-        New-Item -ItemType Directory $app,$out,$tmp | Out-Null
-
-        Copy-Item `
-          target\BlueLink-1.0-SNAPSHOT.jar `
-          "$app\BlueLink.jar"
-
-    # ------------------------------------------------------------
-    # 6. 构建极短 runtime
-    # ------------------------------------------------------------
-    - name: Build runtime
-      shell: pwsh
-      run: |
-        jlink `
-          --module-path "$env:JAVA_HOME\jmods" `
-          --add-modules java.base,java.desktop,java.logging `
-          --strip-debug `
-          --no-man-pages `
-          --no-header-files `
-          --compress=2 `
-          --output C:\pkg\rt
-
-    # ------------------------------------------------------------
-    # 7. 生成 App Image（绝不会再爆）
-    # ------------------------------------------------------------
-    - name: Create App Image
+    # 7️⃣ 构建 EXE（中文 + 图标）
+    - name: Build EXE
       shell: pwsh
       run: |
         jpackage `
+          --type exe `
           --name BlueLink `
-          --input C:\pkg\app `
-          --main-jar BlueLink.jar `
+          --input C:\jpt `
+          --main-jar BlueLink-${{ env.APP_VERSION }}.jar `
           --main-class com.bluelink.Main `
-          --icon src\main\resources\app_icon.ico `
-          --type app-image `
-          --runtime-image C:\pkg\rt `
+          --icon W:\src\main\resources\app_icon.ico `
           --app-version ${{ env.APP_VERSION }} `
-          --dest C:\pkg\out `
-          --temp C:\pkg\tmp
-
-    # ------------------------------------------------------------
-    # 8. 生成 MSI（图标是你的）
-    # ------------------------------------------------------------
-    - name: Create MSI
-      shell: pwsh
-      run: |
-        jpackage `
-          --name BlueLink `
-          --app-image C:\pkg\out\BlueLink `
-          --type msi `
-          --icon src\main\resources\app_icon.ico `
+          --vendor "BlueLink" `
           --win-menu `
           --win-shortcut `
-          --app-version ${{ env.APP_VERSION }} `
-          --dest C:\pkg\out
+          --win-dir-chooser `
+          --dest W:\release
 
-    # ------------------------------------------------------------
-    # 9. 上传 Release
-    # ------------------------------------------------------------
-    - name: Upload Release
+    # 8️⃣ 构建 MSI（中文 + 图标）
+    - name: Build MSI
+      shell: pwsh
+      run: |
+        jpackage `
+          --type msi `
+          --name BlueLink `
+          --input C:\jpt `
+          --main-jar BlueLink-${{ env.APP_VERSION }}.jar `
+          --main-class com.bluelink.Main `
+          --icon W:\src\main\resources\app_icon.ico `
+          --app-version ${{ env.APP_VERSION }} `
+          --vendor "BlueLink" `
+          --win-menu `
+          --win-shortcut `
+          --win-dir-chooser `
+          --win-installer-language zh-CN `
+          --dest W:\release
+
+    # 9️⃣ 发布到 GitHub Release
+    - name: Upload Release Assets
       uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
       with:
         files: |
-          C:\pkg\out\*.msi
+          release/*.exe
+          release/*.msi
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

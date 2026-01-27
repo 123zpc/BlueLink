@@ -13,108 +13,105 @@ jobs:
       contents: write
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Map workspace to W
-      shell: pwsh
-      run: subst W: $env:GITHUB_WORKSPACE
+      - name: Map workspace to W
+        shell: pwsh
+        run: subst W: $env:GITHUB_WORKSPACE
 
-    - name: Setup JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: "17"
-        distribution: "temurin"
-        cache: maven
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: "maven"
 
-    - name: Get version
-      shell: pwsh
-      run: |
-        $v = "${{ github.ref_name }}".TrimStart("v")
-        echo "APP_VERSION=$v" >> $env:GITHUB_ENV
+      - name: Get version
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart("v")
+          "APP_VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-    - name: Build jar
-      shell: pwsh
-      run: mvn clean package -DskipTests
-      working-directory: W:\
+      - name: Build jar
+        shell: pwsh
+        working-directory: W:\
+        run: mvn clean package -DskipTests
 
-    - name: Prepare jpackage input
-      shell: pwsh
-      run: |
-        rmdir C:\jpt -Recurse -Force -ErrorAction SilentlyContinue
-        mkdir C:\jpt | Out-Null
-        copy W:\target\*.jar C:\jpt\
+      - name: Prepare jpackage input
+        shell: pwsh
+        run: |
+          Remove-Item C:\jpt -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item C:\jpt -ItemType Directory | Out-Null
+          Copy-Item W:\target\*.jar C:\jpt\
 
-    - name: Build MSI (jpackage)
-      shell: pwsh
-      run: |
-        jpackage ^
-          --type msi ^
-          --name BlueLink ^
-          --input C:\jpt ^
-          --main-jar BlueLink-%APP_VERSION%.jar ^
-          --main-class com.bluelink.Main ^
-          --icon W:\src\main\resources\app_icon.ico ^
-          --app-version %APP_VERSION% ^
-          --vendor BlueLink ^
-          --win-menu ^
-          --win-shortcut ^
-          --win-dir-chooser ^
-          --dest W:\release
-      env:
-        APP_VERSION: ${{ env.APP_VERSION }}
+      - name: Build MSI (jpackage)
+        shell: pwsh
+        run: |
+          jpackage `
+            --type msi `
+            --name BlueLink `
+            --input C:\jpt `
+            --main-jar BlueLink-$env:APP_VERSION.jar `
+            --main-class com.bluelink.Main `
+            --icon W:\src\main\resources\app_icon.ico `
+            --app-version $env:APP_VERSION `
+            --vendor BlueLink `
+            --win-menu `
+            --win-shortcut `
+            --win-dir-chooser `
+            --dest W:\release
 
-    - name: Install Inno Setup
-      shell: pwsh
-      run: choco install innosetup --no-progress
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress
 
-    - name: Generate Inno Setup script
-      shell: pwsh
-      run: |
-        echo [Setup] > W:\setup.iss
-        echo AppId={{D3776518-2023-4422-A938-BLUELINK123} >> W:\setup.iss
-        echo AppName=BlueLink >> W:\setup.iss
-        echo AppVersion=%APP_VERSION% >> W:\setup.iss
-        echo AppPublisher=BlueLink >> W:\setup.iss
-        echo DefaultDirName={autopf}\BlueLink >> W:\setup.iss
-        echo OutputDir=W:\release >> W:\setup.iss
-        echo OutputBaseFilename=BlueLink_Setup_%APP_VERSION% >> W:\setup.iss
-        echo SetupIconFile=W:\src\main\resources\app_icon.ico >> W:\setup.iss
-        echo Compression=lzma2 >> W:\setup.iss
-        echo SolidCompression=yes >> W:\setup.iss
-        echo WizardStyle=modern >> W:\setup.iss
-        echo. >> W:\setup.iss
-        echo [Languages] >> W:\setup.iss
-        echo Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl" >> W:\setup.iss
-        echo. >> W:\setup.iss
-        echo [Files] >> W:\setup.iss
-        echo Source: "W:\target\image\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs >> W:\setup.iss
-        echo. >> W:\setup.iss
-        echo [Icons] >> W:\setup.iss
-        echo Name: "{autoprograms}\BlueLink"; Filename: "{app}\BlueLink.exe" >> W:\setup.iss
-        echo Name: "{autodesktop}\BlueLink"; Filename: "{app}\BlueLink.exe" >> W:\setup.iss
-        echo. >> W:\setup.iss
-        echo [Run] >> W:\setup.iss
-        echo Filename: "{app}\BlueLink.exe"; Description: "启动 BlueLink"; Flags: nowait postinstall skipifsilent >> W:\setup.iss
-      env:
-        APP_VERSION: ${{ env.APP_VERSION }}
+      - name: Generate Inno Setup script
+        shell: pwsh
+        run: |
+          $f = "W:\setup.iss"
+          Set-Content $f "[Setup]"
+          Add-Content $f "AppId={{D3776518-2023-4422-A938-BLUELINK123}"
+          Add-Content $f "AppName=BlueLink"
+          Add-Content $f "AppVersion=$env:APP_VERSION"
+          Add-Content $f "AppPublisher=BlueLink"
+          Add-Content $f "DefaultDirName={autopf}\BlueLink"
+          Add-Content $f "OutputDir=W:\release"
+          Add-Content $f "OutputBaseFilename=BlueLink_Setup_$env:APP_VERSION"
+          Add-Content $f "SetupIconFile=W:\src\main\resources\app_icon.ico"
+          Add-Content $f "Compression=lzma2"
+          Add-Content $f "SolidCompression=yes"
+          Add-Content $f "WizardStyle=modern"
+          Add-Content $f ""
+          Add-Content $f "[Languages]"
+          Add-Content $f 'Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl"'
+          Add-Content $f ""
+          Add-Content $f "[Files]"
+          Add-Content $f 'Source: "W:\target\image\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs'
+          Add-Content $f ""
+          Add-Content $f "[Icons]"
+          Add-Content $f 'Name: "{autoprograms}\BlueLink"; Filename: "{app}\BlueLink.exe"'
+          Add-Content $f 'Name: "{autodesktop}\BlueLink"; Filename: "{app}\BlueLink.exe"'
+          Add-Content $f ""
+          Add-Content $f "[Run]"
+          Add-Content $f 'Filename: "{app}\BlueLink.exe"; Description: "启动 BlueLink"; Flags: nowait postinstall skipifsilent'
 
-    - name: Build EXE (Inno Setup)
-      shell: pwsh
-      run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" W:\setup.iss'
+      - name: Build EXE (Inno Setup)
+        shell: pwsh
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" W:\setup.iss'
 
-    - name: Upload Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          release/*.msi
-          release/*.exe
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.msi
+            release/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Cleanup
-      if: always()
-      shell: pwsh
-      run: |
-        subst W: /d
-        rmdir C:\jpt -Recurse -Force -ErrorAction SilentlyContinue
+      - name: Cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          subst W: /d
+          Remove-Item C:\jpt -Recurse -Force -ErrorAction SilentlyContinue

@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Windows EXE + MSI
 
 # ================= 权限设置 =================
 # 必须给予写权限，否则最后的 Release 步骤会报 403 错误
@@ -56,10 +56,8 @@ jobs:
         run: copy target\$env:JAR_NAME jpt\
         shell: powershell
 
-      # ================= Build App Image (jpackage) =================
-      # 1. 生成运行目录而非 MSI
-      # 2. 结果输出到 release/BlueLink 文件夹
-      - name: Build App Image with jpackage
+      # ================= 1. Build App Image (用于生成 EXE 的文件夹) =================
+      - name: Build App Image for Inno Setup
         run: |
           jpackage `
             --type app-image `
@@ -69,6 +67,23 @@ jobs:
             --main-class com.bluelink.Main `
             --icon src\main\resources\app_icon.ico `
             --vendor BlueLink `
+            --dest release
+        shell: pwsh
+
+      # ================= 2. Build MSI (独立安装包) =================
+      - name: Build MSI Installer
+        run: |
+          jpackage `
+            --type msi `
+            --name $env:APP_NAME `
+            --input jpt `
+            --main-jar $env:JAR_NAME `
+            --main-class com.bluelink.Main `
+            --icon src\main\resources\app_icon.ico `
+            --vendor BlueLink `
+            --win-menu `
+            --win-shortcut `
+            --win-dir-chooser `
             --dest release
         shell: pwsh
 
@@ -98,7 +113,7 @@ jobs:
           Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 
           [Files]
-          ; 读取 jpackage 生成的目录内容
+          ; 使用 app-image 步骤生成的文件夹
           Source: "release\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
           [Icons]
@@ -115,20 +130,22 @@ jobs:
         run: iscc setup.iss
         shell: powershell
 
-      # ================= (可选) 上传 Artifacts =================
-      # 这个步骤让你在 Actions 运行记录页面也能通过 zip 下载
+      # ================= Upload Artifacts (EXE + MSI) =================
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: BlueLink-Windows-Installer
-          path: release/BlueLink-Setup-*.exe
+          name: BlueLink-Windows-Installers
+          path: |
+            release/*.exe
+            release/*.msi
 
-      # ================= (核心) 发布到 GitHub Releases =================
-      # 这个步骤会将 exe 文件上传到 Releases 页面
+      # ================= Release (EXE + MSI) =================
       - name: Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: release/BlueLink-Setup-*.exe
+          files: |
+            release/*.exe
+            release/*.msi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

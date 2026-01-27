@@ -13,7 +13,7 @@ jobs:
       contents: write
 
     steps:
-    # 1️⃣ Checkout
+    # 1️⃣ 拉代码
     - name: Checkout
       uses: actions/checkout@v4
 
@@ -24,28 +24,27 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # 3️⃣ 解析版本号（v1.0.0 → 1.0.0）
+    # 3️⃣ 解析版本号（v1.0.0 -> 1.0.0）
     - name: Get version
       shell: pwsh
       run: |
         $v = "${{ github.ref_name }}".TrimStart("v")
         echo "APP_VERSION=$v" >> $env:GITHUB_ENV
 
-    # 4️⃣ 使用短路径（subst）防止 32K 路径炸裂
+    # 4️⃣ 使用 subst 映射短路径（核心防 32K 路径）
     - name: Map workspace to short path
       shell: pwsh
       run: |
         subst W: $env:GITHUB_WORKSPACE
-        echo "W: mapped"
 
-    # 5️⃣ Maven 构建（本地仓库也放短路径）
+    # 5️⃣ Maven 构建（本地仓库也放短路径，别拆参数）
     - name: Build with Maven
-      shell: pwsh
+      shell: cmd
       run: |
-        cd W:\
+        cd /d W:\
         mvn clean package -DskipTests -Dmaven.repo.local=W:\.m2
 
-    # 6️⃣ 准备 jpackage 输入（只放 jar，极短路径）
+    # 6️⃣ 准备 jpackage 输入目录（只放 jar，极短）
     - name: Prepare jpackage input
       shell: pwsh
       run: |
@@ -53,7 +52,7 @@ jobs:
         New-Item C:\jpt -ItemType Directory | Out-Null
         Copy-Item W:\target\BlueLink-${{ env.APP_VERSION }}.jar C:\jpt\
 
-    # 7️⃣ 构建 EXE（中文 + 图标）
+    # 7️⃣ 构建 EXE（中文 + 你的图标）
     - name: Build EXE
       shell: pwsh
       run: |
@@ -71,7 +70,7 @@ jobs:
           --win-dir-chooser `
           --dest W:\release
 
-    # 8️⃣ 构建 MSI（中文 + 图标）
+    # 8️⃣ 构建 MSI（中文 + 你的图标）
     - name: Build MSI
       shell: pwsh
       run: |

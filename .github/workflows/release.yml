@@ -13,122 +13,110 @@ jobs:
       contents: write
 
     steps:
-    # 1. 拉取代码
-    - name: Checkout code
-      uses: actions/checkout@v4
+    # ------------------------------------------------------------
+    # 1. Checkout
+    # ------------------------------------------------------------
+    - uses: actions/checkout@v4
 
-    # 2. 设置 JDK 17
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
+    # ------------------------------------------------------------
+    # 2. JDK 17
+    # ------------------------------------------------------------
+    - uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
+        cache: 'maven'
 
-    # 3. Maven 构建
+    # ------------------------------------------------------------
+    # 3. Maven Build
+    # ------------------------------------------------------------
     - name: Build with Maven
-      run: mvn clean package -DskipTests
+      run: mvn -B clean package -DskipTests
 
-    # 4. 获取版本号
+    # ------------------------------------------------------------
+    # 4. 解析版本号
+    # ------------------------------------------------------------
     - name: Get Version
-      id: get_version
       shell: pwsh
       run: |
-        $version = "${{ github.ref_name }}".TrimStart('v')
-        echo "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+        $v = "${{ github.ref_name }}".TrimStart('v')
+        "APP_VERSION=$v" | Out-File $env:GITHUB_ENV -Encoding utf8
 
-    # ==========================================
-    # 任务 A: 生成 MSI (保留原样)
-    # ==========================================
-    - name: Create MSI Installer (jpackage)
+    # ------------------------------------------------------------
+    # 5. 准备“极短 & 干净”的 jpackage 输入目录（核心）
+    # ------------------------------------------------------------
+    - name: Prepare jpackage input
+      shell: pwsh
+      run: |
+        $base = "C:\pkg"
+        $app  = "$base\app"
+        $out  = "$base\out"
+        $tmp  = "$base\tmp"
+
+        Remove-Item $base -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory $app,$out,$tmp | Out-Null
+
+        Copy-Item `
+          target\BlueLink-1.0-SNAPSHOT.jar `
+          "$app\BlueLink.jar"
+
+    # ------------------------------------------------------------
+    # 6. 构建极短 runtime
+    # ------------------------------------------------------------
+    - name: Build runtime
+      shell: pwsh
+      run: |
+        jlink `
+          --module-path "$env:JAVA_HOME\jmods" `
+          --add-modules java.base,java.desktop,java.logging `
+          --strip-debug `
+          --no-man-pages `
+          --no-header-files `
+          --compress=2 `
+          --output C:\pkg\rt
+
+    # ------------------------------------------------------------
+    # 7. 生成 App Image（绝不会再爆）
+    # ------------------------------------------------------------
+    - name: Create App Image
+      shell: pwsh
       run: |
         jpackage `
           --name BlueLink `
-          --input target `
-          --main-jar BlueLink-1.0-SNAPSHOT.jar `
+          --input C:\pkg\app `
+          --main-jar BlueLink.jar `
           --main-class com.bluelink.Main `
-          --icon src/main/resources/app_icon.ico `
+          --icon src\main\resources\app_icon.ico `
+          --type app-image `
+          --runtime-image C:\pkg\rt `
+          --app-version ${{ env.APP_VERSION }} `
+          --dest C:\pkg\out `
+          --temp C:\pkg\tmp
+
+    # ------------------------------------------------------------
+    # 8. 生成 MSI（图标是你的）
+    # ------------------------------------------------------------
+    - name: Create MSI
+      shell: pwsh
+      run: |
+        jpackage `
+          --name BlueLink `
+          --app-image C:\pkg\out\BlueLink `
           --type msi `
-          --win-dir-chooser `
+          --icon src\main\resources\app_icon.ico `
           --win-menu `
           --win-shortcut `
           --app-version ${{ env.APP_VERSION }} `
-          --dest release
+          --dest C:\pkg\out
 
-    # ==========================================
-    # 任务 B: 生成 EXE (动态生成脚本 + 编译)
-    # ==========================================
-    
-    # B1. 生成 App Image (素材准备)
-    - name: Create App Image (for Inno Setup)
-      run: |
-        jpackage `
-          --name BlueLink `
-          --input target `
-          --main-jar BlueLink-1.0-SNAPSHOT.jar `
-          --main-class com.bluelink.Main `
-          --icon src/main/resources/app_icon.ico `
-          --type app-image `
-          --app-version ${{ env.APP_VERSION }} `
-          --dest target/image
-
-    # B2. 安装 Inno Setup
-    - name: Install Inno Setup
-      run: choco install innosetup --no-progress
-
-    # B3. 动态生成 .iss 脚本并编译 (这里是重点！)
-    - name: Generate and Build EXE
-      shell: pwsh
-      run: |
-        # 定义 Inno Setup 脚本内容
-        $issContent = @"
-        [Setup]
-        AppId={{D3776518-2023-4422-A938-BLUELINK123}
-        AppName=BlueLink
-        AppVersion=${{ env.APP_VERSION }}
-        AppPublisher=BlueLink Inc.
-        DefaultDirName={autopf}\BlueLink
-        LanguageDetectionMethod=uilanguage
-        ShowLanguageDialog=yes
-        OutputDir=release
-        OutputBaseFilename=BlueLink_Setup_${{ env.APP_VERSION }}
-        SetupIconFile=src\main\resources\app_icon.ico
-        Compression=lzma
-        SolidCompression=yes
-        WizardStyle=modern
-
-        [Languages]
-        Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
-
-        [Tasks]
-        Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-
-        [Files]
-        ; 注意这里的路径：jpackage 生成的文件夹在 target\image\BlueLink
-        Source: "target\image\BlueLink\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-
-        [Icons]
-        Name: "{autoprograms}\BlueLink"; Filename: "{app}\BlueLink.exe"
-        Name: "{autodesktop}\BlueLink"; Filename: "{app}\BlueLink.exe"; Tasks: desktopicon
-
-        [Run]
-        Filename: "{app}\BlueLink.exe"; Description: "{cm:LaunchProgram,BlueLink}"; Flags: nowait postinstall skipifsilent
-        "@
-
-        # 将内容写入临时文件 setup.iss
-        $issContent | Out-File -FilePath setup.iss -Encoding UTF8
-
-        # 运行编译器
-        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
-
-    # ==========================================
-    # 上传结果
-    # ==========================================
-    - name: Upload Release Assets
-      uses: softprops/action-gh-release@v1
+    # ------------------------------------------------------------
+    # 9. 上传 Release
+    # ------------------------------------------------------------
+    - name: Upload Release
+      uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/')
       with:
         files: |
-          release/*.msi
-          release/*.exe
+          C:\pkg\out\*.msi
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

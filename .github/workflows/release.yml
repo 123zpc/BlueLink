@@ -1,4 +1,4 @@
-name: Build Windows EXE + MSI
+name: Build Windows EXE
 
 on:
   push:
@@ -51,20 +51,18 @@ jobs:
         run: copy target\$env:JAR_NAME jpt\
         shell: powershell
 
-      # ================= MSI (jpackage) =================
-      - name: Build MSI with jpackage
+      # ================= Build App Image (jpackage) =================
+      # 修复关键点：改为 app-image，生成目录结构供 Inno Setup 打包
+      - name: Build App Image with jpackage
         run: |
           jpackage `
-            --type msi `
+            --type app-image `
             --name $env:APP_NAME `
             --input jpt `
             --main-jar $env:JAR_NAME `
             --main-class com.bluelink.Main `
             --icon src\main\resources\app_icon.ico `
             --vendor BlueLink `
-            --win-menu `
-            --win-shortcut `
-            --win-dir-chooser `
             --dest release
         shell: pwsh
 
@@ -88,19 +86,22 @@ jobs:
           Compression=lzma
           SolidCompression=yes
           SetupIconFile=src\main\resources\app_icon.ico
+          UninstallDisplayIcon={app}\BlueLink.exe
 
           [Languages]
           Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 
           [Files]
+          ; 这里引用 release\BlueLink 下的所有文件，这是由上面的 jpackage app-image 生成的
           Source: "release\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
           [Icons]
           Name: "{group}\BlueLink"; Filename: "{app}\BlueLink.exe"
+          Name: "{commondesktop}\BlueLink"; Filename: "{app}\BlueLink.exe"
 
           [Run]
           Filename: "{app}\BlueLink.exe"; Description: "启动 BlueLink"; Flags: nowait postinstall skipifsilent
-          "@ | Out-File -Encoding ASCII setup.iss
+          "@ | Out-File -Encoding UTF8 setup.iss
         shell: powershell
 
       # ================= Build EXE =================
@@ -112,5 +113,5 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: BlueLink-Windows
-          path: release
+          name: BlueLink-Windows-Installer
+          path: release/BlueLink-Setup-*.exe

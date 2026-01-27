@@ -13,17 +13,21 @@ jobs:
       contents: write
 
     steps:
-    - name: Checkout code
+    - name: Checkout code to short path
       uses: actions/checkout@v4
+      with:
+        path: C:\src   # 关键：checkout 到根短路径，避免长路径问题
 
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
+        cache: 'maven'   # 启用 Maven 缓存，加速 mvn package
 
     - name: Build with Maven
       run: mvn clean package -DskipTests
+      working-directory: C:\src
 
     - name: Get Version
       id: get_version
@@ -31,21 +35,16 @@ jobs:
       run: |
         $version = "${{ github.ref_name }}".TrimStart('v')
         echo "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+      working-directory: C:\src
 
-    # ========================================================
-    # 清理并创建短路径临时目录（关键修复）
-    # ========================================================
     - name: Prepare short temp directory for jpackage
       shell: pwsh
       run: |
         $tempDir = "C:\jpt"
         Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-        Write-Output "Using short temp dir: $tempDir"
+      working-directory: C:\src
 
-    # ========================================================
-    # 步骤 1: 生成应用镜像 (使用 --temp 短路径，这是最慢的一步，只做一次)
-    # ========================================================
     - name: Create App Image (Base for both MSI and EXE)
       run: |
         jpackage `
@@ -58,10 +57,8 @@ jobs:
           --app-version ${{ env.APP_VERSION }} `
           --dest target/image `
           --temp C:\jpt
+      working-directory: C:\src
 
-    # ========================================================
-    # 步骤 2: 基于上面的镜像，快速生成 MSI
-    # ========================================================
     - name: Create MSI from Image
       run: |
         jpackage `
@@ -73,12 +70,11 @@ jobs:
           --win-shortcut `
           --app-version ${{ env.APP_VERSION }} `
           --dest release
+      working-directory: C:\src
 
-    # ========================================================
-    # 步骤 3: 安装 Inno Setup 并生成 EXE
-    # ========================================================
     - name: Install Inno Setup
       run: choco install innosetup --no-progress
+      working-directory: C:\src
 
     - name: Generate and Build EXE with Inno Setup
       shell: pwsh
@@ -118,10 +114,8 @@ jobs:
 
         $issContent | Out-File -FilePath setup.iss -Encoding UTF8
         & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
+      working-directory: C:\src
 
-    # ========================================================
-    # 上传 Release 资产
-    # ========================================================
     - name: Upload Release Assets
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
@@ -132,9 +126,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    # 可选：job 结束时清理临时目录（防止占用空间）
+    # 可选清理（防止残留占用空间）
     - name: Clean up jpackage temp directory
       if: always()
       shell: pwsh
-      run: |
-        Remove-Item -Path "C:\jpt" -Recurse -Force -ErrorAction SilentlyContinue
+      run: Remove-Item -Path "C:\jpt" -Recurse -Force -ErrorAction SilentlyContinue

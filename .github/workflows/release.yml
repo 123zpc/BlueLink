@@ -16,6 +16,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: 下载简体中文语言文件
+        run: |
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/main/ChineseSimplified.isl" -OutFile "ChineseSimplified.isl"
+        shell: pwsh
+
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
@@ -68,29 +73,33 @@ jobs:
         run: choco install innosetup -y
         shell: powershell
 
-      # ================= Generate Inno Script =================
+      # ================= Generate Inno Setup script =================
       - name: Generate Inno Setup script
         run: |
+          $version = "${{ github.ref_name }}" -replace '^v',''
           @"
           [Setup]
           AppName=BlueLink
-          AppVersion=1.0.0
+          AppVersion=$version
           DefaultDirName={pf}\BlueLink
           DefaultGroupName=BlueLink
           OutputDir=release
-          OutputBaseFilename=BlueLink-Setup
+          OutputBaseFilename=BlueLink-Setup-$version
           Compression=lzma
           SolidCompression=yes
           SetupIconFile=src\main\resources\app_icon.ico
 
           [Languages]
-          Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+          Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 
           [Files]
-          Source: "release\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs
+          Source: "release\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
           [Icons]
           Name: "{group}\BlueLink"; Filename: "{app}\BlueLink.exe"
+
+          [Run]
+          Filename: "{app}\BlueLink.exe"; Description: "启动 BlueLink"; Flags: nowait postinstall skipifsilent
           "@ | Out-File -Encoding ASCII setup.iss
         shell: powershell
 
@@ -99,7 +108,7 @@ jobs:
         run: iscc setup.iss
         shell: powershell
 
-      # ================= Upload =================
+      # ================= Upload Artifacts =================
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:

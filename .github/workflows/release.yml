@@ -33,7 +33,18 @@ jobs:
         echo "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
 
     # ========================================================
-    # 步骤 1: 生成应用镜像 (这是最慢的一步，我们只做一次！)
+    # 清理并创建短路径临时目录（关键修复）
+    # ========================================================
+    - name: Prepare short temp directory for jpackage
+      shell: pwsh
+      run: |
+        $tempDir = "C:\jpt"
+        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        Write-Output "Using short temp dir: $tempDir"
+
+    # ========================================================
+    # 步骤 1: 生成应用镜像 (使用 --temp 短路径，这是最慢的一步，只做一次)
     # ========================================================
     - name: Create App Image (Base for both MSI and EXE)
       run: |
@@ -45,15 +56,14 @@ jobs:
           --icon src/main/resources/app_icon.ico `
           --type app-image `
           --app-version ${{ env.APP_VERSION }} `
-          --dest target/image
+          --dest target/image `
+          --temp C:\jpt
 
     # ========================================================
     # 步骤 2: 基于上面的镜像，快速生成 MSI
     # ========================================================
     - name: Create MSI from Image
       run: |
-        # 注意：这里使用了 --app-image 参数，直接利用上一步的成果
-        # 不需要再指定 --input 或 --main-jar，速度飞快
         jpackage `
           --name BlueLink `
           --app-image target/image/BlueLink `
@@ -65,12 +75,12 @@ jobs:
           --dest release
 
     # ========================================================
-    # 步骤 3: 基于上面的镜像，快速生成 EXE (Inno Setup)
+    # 步骤 3: 安装 Inno Setup 并生成 EXE
     # ========================================================
     - name: Install Inno Setup
       run: choco install innosetup --no-progress
 
-    - name: Generate and Build EXE
+    - name: Generate and Build EXE with Inno Setup
       shell: pwsh
       run: |
         $issContent = @"
@@ -96,7 +106,6 @@ jobs:
         Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
         [Files]
-        ; 复用步骤 1 生成的文件
         Source: "target\image\BlueLink\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
         [Icons]
@@ -110,6 +119,9 @@ jobs:
         $issContent | Out-File -FilePath setup.iss -Encoding UTF8
         & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
 
+    # ========================================================
+    # 上传 Release 资产
+    # ========================================================
     - name: Upload Release Assets
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
@@ -119,3 +131,10 @@ jobs:
           release/*.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # 可选：job 结束时清理临时目录（防止占用空间）
+    - name: Clean up jpackage temp directory
+      if: always()
+      shell: pwsh
+      run: |
+        Remove-Item -Path "C:\jpt" -Recurse -Force -ErrorAction SilentlyContinue

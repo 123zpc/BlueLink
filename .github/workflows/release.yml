@@ -1,5 +1,10 @@
 name: Build Windows EXE
 
+# ================= 权限设置 =================
+# 必须给予写权限，否则最后的 Release 步骤会报 403 错误
+permissions:
+  contents: write
+
 on:
   push:
     tags:
@@ -52,7 +57,8 @@ jobs:
         shell: powershell
 
       # ================= Build App Image (jpackage) =================
-      # 修复关键点：改为 app-image，生成目录结构供 Inno Setup 打包
+      # 1. 生成运行目录而非 MSI
+      # 2. 结果输出到 release/BlueLink 文件夹
       - name: Build App Image with jpackage
         run: |
           jpackage `
@@ -92,7 +98,7 @@ jobs:
           Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 
           [Files]
-          ; 这里引用 release\BlueLink 下的所有文件，这是由上面的 jpackage app-image 生成的
+          ; 读取 jpackage 生成的目录内容
           Source: "release\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
           [Icons]
@@ -109,9 +115,20 @@ jobs:
         run: iscc setup.iss
         shell: powershell
 
-      # ================= Upload Artifacts =================
+      # ================= (可选) 上传 Artifacts =================
+      # 这个步骤让你在 Actions 运行记录页面也能通过 zip 下载
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: BlueLink-Windows-Installer
           path: release/BlueLink-Setup-*.exe
+
+      # ================= (核心) 发布到 GitHub Releases =================
+      # 这个步骤会将 exe 文件上传到 Releases 页面
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: release/BlueLink-Setup-*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

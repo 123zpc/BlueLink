@@ -13,11 +13,17 @@ jobs:
       contents: write
 
     steps:
-    - name: Checkout code to short relative path
+    # ------------------------------------------------------------
+    # 1. Checkout 到极短路径（核心避坑）
+    # ------------------------------------------------------------
+    - name: Checkout code to short path
       uses: actions/checkout@v4
       with:
-        path: src
+        path: C:\w\src
 
+    # ------------------------------------------------------------
+    # 2. JDK 17
+    # ------------------------------------------------------------
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
@@ -25,27 +31,40 @@ jobs:
         distribution: 'temurin'
         cache: 'maven'
 
+    # ------------------------------------------------------------
+    # 3. Maven Build
+    # ------------------------------------------------------------
     - name: Build with Maven
+      working-directory: C:\w\src
       run: mvn clean package -DskipTests
-      working-directory: src
 
+    # ------------------------------------------------------------
+    # 4. 解析版本号（tag -> app version）
+    # ------------------------------------------------------------
     - name: Get Version
       id: get_version
       shell: pwsh
+      working-directory: C:\w\src
       run: |
         $version = "${{ github.ref_name }}".TrimStart('v')
-        echo "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
-      working-directory: src
+        "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
 
-    - name: Prepare short temp directory for jpackage
+    # ------------------------------------------------------------
+    # 5. jpackage 临时目录（极短）
+    # ------------------------------------------------------------
+    - name: Prepare jpackage temp
       shell: pwsh
       run: |
         $tempDir = "C:\jpt"
         Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-      working-directory: src
 
-    - name: Create App Image (Base for both MSI and EXE)
+    # ------------------------------------------------------------
+    # 6. 生成 App Image（关键步骤）
+    # ------------------------------------------------------------
+    - name: Create App Image
+      shell: pwsh
+      working-directory: C:\w\src
       run: |
         jpackage `
           --name BlueLink `
@@ -57,9 +76,13 @@ jobs:
           --app-version ${{ env.APP_VERSION }} `
           --dest target/image `
           --temp C:\jpt
-      working-directory: src
 
-    - name: Create MSI from Image
+    # ------------------------------------------------------------
+    # 7. 从 Image 生成 MSI
+    # ------------------------------------------------------------
+    - name: Create MSI
+      shell: pwsh
+      working-directory: C:\w\src
       run: |
         jpackage `
           --name BlueLink `
@@ -70,25 +93,27 @@ jobs:
           --win-shortcut `
           --app-version ${{ env.APP_VERSION }} `
           --dest release
-      working-directory: src
 
+    # ------------------------------------------------------------
+    # 8. 安装 Inno Setup
+    # ------------------------------------------------------------
     - name: Install Inno Setup
       run: choco install innosetup --no-progress
-      working-directory: src
 
-    - name: Generate and Build EXE with Inno Setup
+    # ------------------------------------------------------------
+    # 9. 生成 EXE 安装包（Inno Setup）
+    # ------------------------------------------------------------
+    - name: Build EXE with Inno Setup
       shell: pwsh
-      working-directory: src
+      working-directory: C:\w\src
       run: |
-        $issContent = @"
+        $iss = @"
         [Setup]
         AppId={{D3776518-2023-4422-A938-BLUELINK123}
         AppName=BlueLink
         AppVersion=${{ env.APP_VERSION }}
         AppPublisher=BlueLink Inc.
         DefaultDirName={autopf}\BlueLink
-        LanguageDetectionMethod=uilanguage
-        ShowLanguageDialog=yes
         OutputDir=release
         OutputBaseFilename=BlueLink_Setup_${{ env.APP_VERSION }}
         SetupIconFile=src\main\resources\app_icon.ico
@@ -100,33 +125,39 @@ jobs:
         Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
         [Tasks]
-        Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+        Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 
         [Files]
-        Source: "target\image\BlueLink\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+        Source: "target\image\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
         [Icons]
         Name: "{autoprograms}\BlueLink"; Filename: "{app}\BlueLink.exe"
         Name: "{autodesktop}\BlueLink"; Filename: "{app}\BlueLink.exe"; Tasks: desktopicon
 
         [Run]
-        Filename: "{app}\BlueLink.exe"; Description: "{cm:LaunchProgram,BlueLink}"; Flags: nowait postinstall skipifsilent
+        Filename: "{app}\BlueLink.exe"; Flags: nowait postinstall skipifsilent
         "@
 
-        $issContent | Out-File -FilePath setup.iss -Encoding UTF8
+        $iss | Out-File setup.iss -Encoding UTF8
         & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
 
+    # ------------------------------------------------------------
+    # 10. 上传 Release 资源
+    # ------------------------------------------------------------
     - name: Upload Release Assets
       uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/')
       with:
         files: |
-          src/release/*.msi
-          src/release/*.exe
+          C:\w\src\release\*.msi
+          C:\w\src\release\*.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Clean up jpackage temp directory
+    # ------------------------------------------------------------
+    # 11. 清理 jpackage temp
+    # ------------------------------------------------------------
+    - name: Clean jpackage temp
       if: always()
       shell: pwsh
       run: Remove-Item -Path "C:\jpt" -Recurse -Force -ErrorAction SilentlyContinue

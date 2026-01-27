@@ -13,7 +13,7 @@ jobs:
       contents: write
 
     steps:
-    # 1️⃣ 拉代码
+    # 1️⃣ Checkout
     - name: Checkout
       uses: actions/checkout@v4
 
@@ -24,35 +24,46 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # 3️⃣ 解析版本号（v1.0.0 -> 1.0.0）
+    # 3️⃣ 解析版本号 v1.0.0 -> 1.0.0
     - name: Get version
       shell: pwsh
       run: |
         $v = "${{ github.ref_name }}".TrimStart("v")
         echo "APP_VERSION=$v" >> $env:GITHUB_ENV
 
-    # 4️⃣ 使用 subst 映射短路径（核心防 32K 路径）
+    # 4️⃣ 映射短路径（防 32K 路径）
     - name: Map workspace to short path
       shell: pwsh
       run: |
         subst W: $env:GITHUB_WORKSPACE
 
-    # 5️⃣ Maven 构建（本地仓库也放短路径，别拆参数）
+    # 5️⃣ Maven 构建（本地仓库也用短路径）
     - name: Build with Maven
       shell: cmd
       run: |
         cd /d W:\
         mvn clean package -DskipTests -Dmaven.repo.local=W:\.m2
 
-    # 6️⃣ 准备 jpackage 输入目录（只放 jar，极短）
+    # 6️⃣ 自动找到真正的 jar（不猜名字）
     - name: Prepare jpackage input
       shell: pwsh
       run: |
         Remove-Item C:\jpt -Recurse -Force -ErrorAction SilentlyContinue
         New-Item C:\jpt -ItemType Directory | Out-Null
-        Copy-Item W:\target\BlueLink-${{ env.APP_VERSION }}.jar C:\jpt\
 
-    # 7️⃣ 构建 EXE（中文 + 你的图标）
+        $jar = Get-ChildItem W:\target\*.jar |
+               Where-Object { $_.Name -notmatch 'original|sources|javadoc' } |
+               Select-Object -First 1
+
+        if (-not $jar) {
+          Write-Error "No runnable jar found in target"
+          exit 1
+        }
+
+        Copy-Item $jar.FullName C:\jpt\
+        echo "JAR_NAME=$($jar.Name)" >> $env:GITHUB_ENV
+
+    # 7️⃣ 构建 EXE（中文 + 图标）
     - name: Build EXE
       shell: pwsh
       run: |
@@ -60,7 +71,7 @@ jobs:
           --type exe `
           --name BlueLink `
           --input C:\jpt `
-          --main-jar BlueLink-${{ env.APP_VERSION }}.jar `
+          --main-jar ${{ env.JAR_NAME }} `
           --main-class com.bluelink.Main `
           --icon W:\src\main\resources\app_icon.ico `
           --app-version ${{ env.APP_VERSION }} `
@@ -70,7 +81,7 @@ jobs:
           --win-dir-chooser `
           --dest W:\release
 
-    # 8️⃣ 构建 MSI（中文 + 你的图标）
+    # 8️⃣ 构建 MSI（中文 + 图标）
     - name: Build MSI
       shell: pwsh
       run: |
@@ -78,7 +89,7 @@ jobs:
           --type msi `
           --name BlueLink `
           --input C:\jpt `
-          --main-jar BlueLink-${{ env.APP_VERSION }}.jar `
+          --main-jar ${{ env.JAR_NAME }} `
           --main-class com.bluelink.Main `
           --icon W:\src\main\resources\app_icon.ico `
           --app-version ${{ env.APP_VERSION }} `

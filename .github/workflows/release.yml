@@ -97,7 +97,6 @@ jobs:
           --win-menu `
           --win-shortcut `
           --win-dir-chooser `
-          --win-installer-language zh-CN `
           --dest W:\release
 
     # 9️⃣ 发布到 GitHub Release

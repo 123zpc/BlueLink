@@ -1,4 +1,4 @@
-name: Build & Release Windows (EXE + MSI)
+name: Build & Release Windows (Inno EXE + MSI)
 
 on:
   push:
@@ -24,51 +24,51 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # 3️⃣ 解析版本号 v1.0.0 -> 1.0.0
+    # 3️⃣ 版本号 v1.0.0 -> 1.0.0
     - name: Get version
       shell: pwsh
       run: |
         $v = "${{ github.ref_name }}".TrimStart("v")
         echo "APP_VERSION=$v" >> $env:GITHUB_ENV
 
-    # 4️⃣ 映射短路径（防 32K 路径）
+    # 4️⃣ 映射短路径（防 32K）
     - name: Map workspace to short path
       shell: pwsh
       run: |
         subst W: $env:GITHUB_WORKSPACE
 
-    # 5️⃣ Maven 构建（本地仓库也用短路径）
+    # 5️⃣ Maven 构建（短路径仓库）
     - name: Build with Maven
       shell: cmd
       run: |
         cd /d W:\
         mvn clean package -DskipTests -Dmaven.repo.local=W:\.m2
 
-    # 6️⃣ 自动找到真正的 jar（不猜名字）
-    - name: Prepare jpackage input
+    # 6️⃣ 找到真正的 jar
+    - name: Locate runnable jar
       shell: pwsh
       run: |
-        Remove-Item C:\jpt -Recurse -Force -ErrorAction SilentlyContinue
-        New-Item C:\jpt -ItemType Directory | Out-Null
-
         $jar = Get-ChildItem W:\target\*.jar |
                Where-Object { $_.Name -notmatch 'original|sources|javadoc' } |
                Select-Object -First 1
 
         if (-not $jar) {
-          Write-Error "No runnable jar found in target"
+          Write-Error "No runnable jar found"
           exit 1
         }
 
-        Copy-Item $jar.FullName C:\jpt\
         echo "JAR_NAME=$($jar.Name)" >> $env:GITHUB_ENV
 
-    # 7️⃣ 构建 EXE（中文 + 图标）
-    - name: Build EXE
+    # 7️⃣ 生成 app-image（给 Inno 用）
+    - name: Build app-image
       shell: pwsh
       run: |
+        Remove-Item C:\jpt -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item C:\jpt -ItemType Directory | Out-Null
+        Copy-Item W:\target\${{ env.JAR_NAME }} C:\jpt\
+
         jpackage `
-          --type exe `
+          --type app-image `
           --name BlueLink `
           --input C:\jpt `
           --main-jar ${{ env.JAR_NAME }} `
@@ -76,12 +76,46 @@ jobs:
           --icon W:\src\main\resources\app_icon.ico `
           --app-version ${{ env.APP_VERSION }} `
           --vendor "BlueLink" `
-          --win-menu `
-          --win-shortcut `
-          --win-dir-chooser `
-          --dest W:\release
+          --dest W:\app-image
 
-    # 8️⃣ 构建 MSI（中文 + 图标）
+    # 8️⃣ 安装 Inno Setup
+    - name: Install Inno Setup
+      run: choco install innosetup --no-progress
+
+    # 9️⃣ 生成 Inno EXE（中文 + 图标）
+    - name: Build Inno Setup EXE
+      shell: pwsh
+      run: |
+        $iss = @"
+[Setup]
+AppName=BlueLink
+AppVersion=${{ env.APP_VERSION }}
+DefaultDirName={autopf}\BlueLink
+OutputDir=W:\release
+OutputBaseFilename=BlueLink_Setup_${{ env.APP_VERSION }}
+SetupIconFile=W:\src\main\resources\app_icon.ico
+WizardStyle=modern
+Compression=lzma2
+SolidCompression=yes
+
+[Languages]
+Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+
+[Files]
+Source: "W:\app-image\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{autoprograms}\BlueLink"; Filename: "{app}\BlueLink.exe"
+Name: "{autodesktop}\BlueLink"; Filename: "{app}\BlueLink.exe"
+
+[Run]
+Filename: "{app}\BlueLink.exe"; Flags: nowait postinstall
+"@
+
+        $iss | Out-File W:\setup.iss -Encoding UTF8
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" W:\setup.iss
+
+    # 🔟 构建 MSI（企业版）
     - name: Build MSI
       shell: pwsh
       run: |
@@ -99,7 +133,7 @@ jobs:
           --win-dir-chooser `
           --dest W:\release
 
-    # 9️⃣ 发布到 GitHub Release
+    # 1️⃣1️⃣ 发布 Release
     - name: Upload Release Assets
       uses: softprops/action-gh-release@v2
       with:

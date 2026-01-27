@@ -11,7 +11,6 @@ jobs:
 
     env:
       APP_NAME: BlueLink
-      APP_VERSION: 1.0.0
 
     steps:
       - name: Checkout
@@ -23,15 +22,28 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # ================= Build JAR =================
+      - name: Build with Maven
+        run: mvn -B clean package -DskipTests
+        shell: powershell
+
       - name: Prepare directories
         run: |
           mkdir jpt
           mkdir release
         shell: powershell
 
-      - name: Copy jar to jpackage input
+      # ================= Find JAR =================
+      - name: Locate JAR
+        id: jar
         run: |
-          copy target\BlueLink-${{ env.APP_VERSION }}.jar jpt\
+          $jar = Get-ChildItem target -Filter "*.jar" | Where-Object { $_.Name -notlike "*sources*" -and $_.Name -notlike "*javadoc*" } | Select-Object -First 1
+          if (-not $jar) { throw "No jar found in target directory" }
+          echo "JAR_NAME=$($jar.Name)" >> $env:GITHUB_ENV
+        shell: powershell
+
+      - name: Copy JAR to jpackage input
+        run: copy target\$env:JAR_NAME jpt\
         shell: powershell
 
       # ================= MSI (jpackage) =================
@@ -41,10 +53,9 @@ jobs:
             --type msi `
             --name $env:APP_NAME `
             --input jpt `
-            --main-jar BlueLink-$env:APP_VERSION.jar `
+            --main-jar $env:JAR_NAME `
             --main-class com.bluelink.Main `
             --icon src\main\resources\app_icon.ico `
-            --app-version $env:APP_VERSION `
             --vendor BlueLink `
             --win-menu `
             --win-shortcut `
@@ -63,11 +74,11 @@ jobs:
           @"
           [Setup]
           AppName=BlueLink
-          AppVersion=${{ env.APP_VERSION }}
+          AppVersion=1.0.0
           DefaultDirName={pf}\BlueLink
           DefaultGroupName=BlueLink
           OutputDir=release
-          OutputBaseFilename=BlueLink-${{ env.APP_VERSION }}-Setup
+          OutputBaseFilename=BlueLink-Setup
           Compression=lzma
           SolidCompression=yes
           SetupIconFile=src\main\resources\app_icon.ico

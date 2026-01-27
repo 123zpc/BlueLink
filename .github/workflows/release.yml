@@ -1,4 +1,4 @@
-name: Windows Release (MSI + EXE)
+name: Windows Release
 
 on:
   push:
@@ -16,18 +16,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Map workspace to W
+      - name: Map workspace
         shell: pwsh
-        run: subst W: $env:GITHUB_WORKSPACE
+        run: |
+          subst W: $env:GITHUB_WORKSPACE
 
-      - name: Setup JDK 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           java-version: "17"
           distribution: "temurin"
           cache: "maven"
 
-      - name: Get version
+      - name: Read version
         shell: pwsh
         run: |
           $v = "${{ github.ref_name }}".TrimStart("v")
@@ -38,14 +39,14 @@ jobs:
         working-directory: W:\
         run: mvn clean package -DskipTests
 
-      - name: Prepare jpackage input
+      - name: Prepare jpackage
         shell: pwsh
         run: |
           Remove-Item C:\jpt -Recurse -Force -ErrorAction SilentlyContinue
           New-Item C:\jpt -ItemType Directory | Out-Null
           Copy-Item W:\target\*.jar C:\jpt\
 
-      - name: Build MSI (jpackage)
+      - name: Build MSI
         shell: pwsh
         run: |
           jpackage `
@@ -66,7 +67,7 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress
 
-      - name: Generate Inno Setup script
+      - name: Generate Inno script
         shell: pwsh
         run: |
           $f = "W:\setup.iss"
@@ -96,9 +97,10 @@ jobs:
           Add-Content $f "[Run]"
           Add-Content $f 'Filename: "{app}\BlueLink.exe"; Description: "启动 BlueLink"; Flags: nowait postinstall skipifsilent'
 
-      - name: Build EXE (Inno Setup)
+      - name: Build EXE
         shell: pwsh
-        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" W:\setup.iss'
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" W:\setup.iss
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2

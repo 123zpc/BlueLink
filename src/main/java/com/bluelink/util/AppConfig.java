@@ -117,4 +117,16 @@ public class AppConfig {
     public static void setDownloadPath(String path) {
         saveConfig("download.path", path);
     }
+
+    /**
+     * 发送快捷键模式
+     * true: 回车发送, false: Ctrl+回车发送
+     */
+    public static boolean isEnterToSend() {
+        return Boolean.parseBoolean(props.getProperty("enter.to.send", "true"));
+    }
+
+    public static void setEnterToSend(boolean enterToSend) {
+        saveConfig("enter.to.send", String.valueOf(enterToSend));
+    }
 }

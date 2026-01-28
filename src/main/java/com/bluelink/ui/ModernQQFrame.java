@@ -46,7 +46,7 @@ public class ModernQQFrame extends JFrame {
     private boolean hasLoadedAllHistory = false; // 是否已加载全部历史
 
     // 发送模式: true = 回车发送, false = Ctrl+回车发送
-    private boolean enterToSend = true;
+    private boolean enterToSend = com.bluelink.util.AppConfig.isEnterToSend();
 
     // 网络组件
     private com.bluelink.net.BluetoothServer server;
@@ -399,6 +399,7 @@ public class ModernQQFrame extends JFrame {
 
         enterSendItem.addActionListener(e -> {
             enterToSend = enterSendItem.isSelected();
+            com.bluelink.util.AppConfig.setEnterToSend(enterToSend); // 持久化
             String tip = enterToSend ? "当前模式: 回车发送" : "当前模式: Ctrl+回车发送";
             inputArea.setToolTipText(tip);
         });
@@ -411,26 +412,46 @@ public class ModernQQFrame extends JFrame {
     }
 
     private void enableDragAndDrop() {
-        new java.awt.dnd.DropTarget(this, new java.awt.dnd.DropTargetAdapter() {
+        // 定义统一的 DropTargetAdapter
+        java.awt.dnd.DropTargetAdapter dropListener = new java.awt.dnd.DropTargetAdapter() {
             @SuppressWarnings("unchecked")
             @Override
             public void drop(java.awt.dnd.DropTargetDropEvent dtde) {
                 try {
-                    dtde.acceptDrop(java.awt.dnd.DnDConstants.ACTION_COPY);
-                    java.util.List<File> droppedFiles = (java.util.List<File>) dtde.getTransferable()
-                            .getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor);
+                    if (dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
+                        dtde.acceptDrop(java.awt.dnd.DnDConstants.ACTION_COPY);
+                        java.util.List<File> droppedFiles = (java.util.List<File>) dtde.getTransferable()
+                                .getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor);
 
-                    for (File file : droppedFiles) {
-                        // 使用新的发送逻辑 (支持状态持久化和重试)
-                        performFileSend(file);
+                        for (File file : droppedFiles) {
+                            performFileSend(file);
+                        }
+                        dtde.dropComplete(true);
+                    } else {
+                        dtde.rejectDrop();
                     }
-                    dtde.dropComplete(true);
                 } catch (Exception e) {
                     e.printStackTrace();
                     dtde.dropComplete(false);
                 }
             }
-        });
+        };
+
+        // 方案：使用 GlassPane 覆盖整个窗口以实现全局拖拽
+        // 1. 创建一个透明的 Panel 作为 GlassPane
+        JPanel glassPane = new JPanel();
+        glassPane.setOpaque(false); // 透明，不遮挡底层画面
+        glassPane.setLayout(null);
+        
+        // 2. 为 GlassPane 设置 DropTarget
+        new java.awt.dnd.DropTarget(glassPane, dropListener);
+        
+        // 3. 设置为窗口的 GlassPane 并显示
+        this.setGlassPane(glassPane);
+        glassPane.setVisible(true); // 必须可见才能接收 Drop 事件
+        
+        // 注意：只要不给 GlassPane 添加 MouseListener，鼠标点击事件就会自动穿透到下层组件
+        // 这样既实现了"全窗口任意区域拖拽"，又不会影响按钮点击和文本输入
     }
 
     private void performSend() {
@@ -657,6 +678,7 @@ public class ModernQQFrame extends JFrame {
         // Save Logic
         saveBtn.addActionListener(e -> {
             this.enterToSend = tempEnterToSend.get();
+            com.bluelink.util.AppConfig.setEnterToSend(this.enterToSend);
             com.bluelink.util.AppConfig.setConnectionTimeout(tempTimeout.get());
             com.bluelink.util.AppConfig.setDownloadPath(tempPath.get());
 
@@ -1181,18 +1203,30 @@ public class ModernQQFrame extends JFrame {
         backToBottomBtn.addActionListener(e -> scrollToBottom());
 
         // 布局 LayeredPane
-        // 监听大小变化以调整组件大小
-        layeredChatPane.addComponentListener(new java.awt.event.ComponentAdapter() {
+        // 优化：使用自定义 LayoutManager 替代 ComponentListener，解决缩放迟缓问题
+        layeredChatPane.setLayout(new LayoutManager() {
             @Override
-            public void componentResized(java.awt.event.ComponentEvent e) {
-                int w = layeredChatPane.getWidth();
-                int h = layeredChatPane.getHeight();
-                chatScrollPane.setBounds(0, 0, w, h);
-
-                // 按钮位置：右下角悬浮
-                int btnW = 100;
-                int btnH = 30;
-                backToBottomBtn.setBounds(w - btnW - 20, h - btnH - 20, btnW, btnH);
+            public void addLayoutComponent(String name, Component comp) {}
+            @Override
+            public void removeLayoutComponent(Component comp) {}
+            @Override
+            public Dimension preferredLayoutSize(Container parent) { return new Dimension(100, 100); }
+            @Override
+            public Dimension minimumLayoutSize(Container parent) { return new Dimension(0, 0); }
+            @Override
+            public void layoutContainer(Container parent) {
+                int w = parent.getWidth();
+                int h = parent.getHeight();
+                // 1. 聊天列表充满全屏
+                if (chatScrollPane != null) {
+                    chatScrollPane.setBounds(0, 0, w, h);
+                }
+                // 2. 按钮固定在右下角
+                if (backToBottomBtn != null) {
+                    int btnW = 100;
+                    int btnH = 30;
+                    backToBottomBtn.setBounds(w - btnW - 20, h - btnH - 20, btnW, btnH);
+                }
             }
         });
 
@@ -1212,6 +1246,52 @@ public class ModernQQFrame extends JFrame {
         // 输入框
         inputArea = new JTextArea();
         inputArea.setLineWrap(true);
+        
+        // 优化：拦截粘贴操作 (Ctrl+V)，防止大文本卡死
+        inputArea.getInputMap().put(KeyStroke.getKeyStroke("ctrl V"), "paste-check");
+        inputArea.getActionMap().put("paste-check", new AbstractAction() {
+            @Override
+            public void actionPerformed(java.awt.event.ActionEvent e) {
+                try {
+                    java.awt.datatransfer.Transferable t = Toolkit.getDefaultToolkit().getSystemClipboard().getContents(null);
+                    if (t != null && t.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.stringFlavor)) {
+                        String data = (String) t.getTransferData(java.awt.datatransfer.DataFlavor.stringFlavor);
+                        // 阈值：5000字符 (约10KB)，避免 UI 线程阻塞
+                        if (data != null && data.length() > 5000) {
+                            int choice = JOptionPane.showConfirmDialog(
+                                    ModernQQFrame.this,
+                                    "检测到粘贴文本过长 (" + com.bluelink.ui.bubble.BubbleFactory.formatSize(data.length()) + ")，可能导致卡顿。\n建议将其作为【文本文件】发送，是否继续？",
+                                    "大文本智能处理",
+                                    JOptionPane.YES_NO_CANCEL_OPTION,
+                                    JOptionPane.QUESTION_MESSAGE);
+
+                            if (choice == JOptionPane.YES_OPTION) {
+                                // 方案 A: 作为文件发送 (推荐)
+                                try {
+                                    File tempFile = File.createTempFile("text_snippet_" + System.currentTimeMillis(), ".txt");
+                                    try (java.io.FileOutputStream fos = new java.io.FileOutputStream(tempFile)) {
+                                        fos.write(data.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                                    }
+                                    performFileSend(tempFile);
+                                } catch (Exception ex) {
+                                    ex.printStackTrace();
+                                    JOptionPane.showMessageDialog(ModernQQFrame.this, "创建临时文件失败: " + ex.getMessage());
+                                }
+                                return; // 拦截粘贴
+                            } else if (choice == JOptionPane.CANCEL_OPTION || choice == JOptionPane.CLOSED_OPTION) {
+                                return; // 取消操作
+                            }
+                            // 方案 B: 用户坚持粘贴 (NO_OPTION)，放行
+                        }
+                    }
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+                // 执行默认粘贴
+                inputArea.paste();
+            }
+        });
+
         inputArea.setBorder(null);
         inputArea.setFont(UiUtils.FONT_NORMAL.deriveFont(14f));
         JScrollPane inputScroll = new JScrollPane(inputArea);

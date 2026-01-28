@@ -68,6 +68,11 @@ public class BubbleFactory {
             // 尝试获取顶级容器 RootPane 来作为宽度的绝对参考
             Container root = getRootPane();
             int maxAvailableWidth = (root != null) ? (int) (root.getWidth() * 0.65) : 500;
+            
+            // 性能优化：对最大宽度进行取整 (Snap)，减少 resize 时的重排计算次数
+            // 步长设为 50px，大幅降低连续 resize 时的 CPU 消耗
+            maxAvailableWidth = (maxAvailableWidth / 50) * 50;
+            
             // 最小值保护 (不能太窄)
             maxAvailableWidth = Math.max(maxAvailableWidth, 200);
 

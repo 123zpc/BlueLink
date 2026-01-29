@@ -57,6 +57,9 @@ public class ModernQQFrame extends JFrame {
     private java.util.Map<String, com.bluelink.ui.bubble.BubblePanel> activeFileBubbles = new java.util.concurrent.ConcurrentHashMap<>();
     // 正在发送的文件气泡 (fileName -> bubble)
     private java.util.Map<String, com.bluelink.ui.bubble.BubblePanel> sendingFileBubbles = new java.util.concurrent.ConcurrentHashMap<>();
+    
+    // 发送任务执行器 (单线程，保证发送顺序)
+    private final java.util.concurrent.ExecutorService fileSendExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
 
     public ModernQQFrame() {
         initUI();
@@ -74,6 +77,9 @@ public class ModernQQFrame extends JFrame {
      */
     public void shutdown() {
         System.out.println("[App] 正在关闭，清理资源...");
+        if (fileSendExecutor != null) {
+            fileSendExecutor.shutdownNow();
+        }
         if (server != null) {
             try { server.stop(); } catch (Throwable t) {}
         }
@@ -414,6 +420,33 @@ public class ModernQQFrame extends JFrame {
     private void enableDragAndDrop() {
         // 定义统一的 DropTargetAdapter
         java.awt.dnd.DropTargetAdapter dropListener = new java.awt.dnd.DropTargetAdapter() {
+            @Override
+            public void dragEnter(java.awt.dnd.DropTargetDragEvent dtde) {
+                if (dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
+                    dtde.acceptDrag(java.awt.dnd.DnDConstants.ACTION_COPY);
+                } else {
+                    dtde.rejectDrag();
+                }
+            }
+
+            @Override
+            public void dragOver(java.awt.dnd.DropTargetDragEvent dtde) {
+                if (dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
+                    dtde.acceptDrag(java.awt.dnd.DnDConstants.ACTION_COPY);
+                } else {
+                    dtde.rejectDrag();
+                }
+            }
+
+            @Override
+            public void dropActionChanged(java.awt.dnd.DropTargetDragEvent dtde) {
+                if (dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
+                    dtde.acceptDrag(java.awt.dnd.DnDConstants.ACTION_COPY);
+                } else {
+                    dtde.rejectDrag();
+                }
+            }
+
             @SuppressWarnings("unchecked")
             @Override
             public void drop(java.awt.dnd.DropTargetDropEvent dtde) {
@@ -430,7 +463,7 @@ public class ModernQQFrame extends JFrame {
                     } else {
                         dtde.rejectDrop();
                     }
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     e.printStackTrace();
                     dtde.dropComplete(false);
                 }
@@ -510,53 +543,55 @@ public class ModernQQFrame extends JFrame {
     }
 
     private void performFileSend(File file) {
-        // 将耗时的数据库操作移至后台线程，避免阻塞 UI 线程 (EDT) 导致卡死
-        new Thread(() -> {
-            // 1. 初始化并保存 (status=SENDING) -> 获取 ID
-            com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("FILE", true,
-                    file.getAbsolutePath(), file.length());
-            item.status = "SENDING";
-            com.bluelink.db.TransferDao.save(item);
+        // 生成唯一任务ID，解决同名文件发送冲突导致 UI 进度更新混乱的问题
+        String taskKey = java.util.UUID.randomUUID().toString();
+        
+        // 1. 立即在 EDT 渲染 UI，确保气泡顺序与添加顺序一致 (从上到下)
+        SwingUtilities.invokeLater(() -> {
+            // Optimistic UI
+            com.bluelink.ui.bubble.BubblePanel bubble = renderFileBubble(true, file, taskKey);
+            
+            // 强制滚到底部
+            scrollToBottom();
+            
+            // 2. 将发送任务提交到单线程队列，确保网络发送顺序与 UI 顺序一致 (FIFO)
+            fileSendExecutor.submit(() -> {
+                // 2.1 数据库操作 (后台线程)
+                com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("FILE", true,
+                        file.getAbsolutePath(), file.length());
+                item.status = "SENDING";
+                com.bluelink.db.TransferDao.save(item);
 
-            // 2. 回到 EDT 更新 UI
-            SwingUtilities.invokeLater(() -> {
-                // Optimistic UI
-                com.bluelink.ui.bubble.BubblePanel bubble = renderFileBubble(true, file);
-
-                // 强制滚到底部
-                scrollToBottom();
-
-                // 3. 启动发送线程 (异步网络发送)
-                new Thread(() -> {
-                    try {
-                        if (currentSession != null) {
-                            currentSession.sendFile(file);
-                        } else {
-                            client.sendFile(file);
-                        }
-
-                        // 发送成功: 更新数据库状态 (Status=SUCCESS)
-                        if (item.id > 0) {
-                            com.bluelink.db.TransferDao.updateStatus(item.id, "SUCCESS");
-                        }
-
-                    } catch (Exception e) {
-                        // 发送失败: 更新 UI 和 数据库
-                        SwingUtilities.invokeLater(() -> {
-                            if (bubble != null) {
-                                bubble.setStatus(true); // 显示失败红点
-                                // 绑定重试 action
-                                bubble.setRetryAction(() -> performResend(item, bubble));
-                            }
-                        });
-
-                        if (item.id > 0) {
-                            com.bluelink.db.TransferDao.updateStatus(item.id, "FAILED");
-                        }
+                try {
+                    // 2.2 网络发送 (阻塞执行)
+                    if (currentSession != null) {
+                        currentSession.sendFile(file, taskKey);
+                    } else {
+                        // 兼容旧客户端 (无进度)
+                        client.sendFile(file);
                     }
-                }).start();
+
+                    // 发送成功: 更新数据库状态 (Status=SUCCESS)
+                    if (item.id > 0) {
+                        com.bluelink.db.TransferDao.updateStatus(item.id, "SUCCESS");
+                    }
+
+                } catch (Exception e) {
+                    // 发送失败: 更新 UI 和 数据库
+                    SwingUtilities.invokeLater(() -> {
+                        if (bubble != null) {
+                            bubble.setStatus(true); // 显示失败红点
+                            // 绑定重试 action
+                            bubble.setRetryAction(() -> performResend(item, bubble));
+                        }
+                    });
+
+                    if (item.id > 0) {
+                        com.bluelink.db.TransferDao.updateStatus(item.id, "FAILED");
+                    }
+                }
             });
-        }).start();
+        });
     }
 
     private void createSidebar() {
@@ -1254,7 +1289,29 @@ public class ModernQQFrame extends JFrame {
             public void actionPerformed(java.awt.event.ActionEvent e) {
                 try {
                     java.awt.datatransfer.Transferable t = Toolkit.getDefaultToolkit().getSystemClipboard().getContents(null);
-                    if (t != null && t.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.stringFlavor)) {
+                    if (t == null) return;
+
+                    // 1. 处理文件列表粘贴
+                    if (t.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
+                        @SuppressWarnings("unchecked")
+                        java.util.List<File> files = (java.util.List<File>) t.getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor);
+                        for (File file : files) {
+                            performFileSend(file);
+                        }
+                        return; // 拦截默认粘贴
+                    }
+                    
+                    // 2. 处理图片粘贴
+                    if (t.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.imageFlavor)) {
+                        java.awt.Image image = (java.awt.Image) t.getTransferData(java.awt.datatransfer.DataFlavor.imageFlavor);
+                        if (image != null) {
+                            showImagePreviewAndSend(image);
+                        }
+                        return; // 拦截默认粘贴
+                    }
+
+                    // 3. 处理文本粘贴
+                    if (t.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.stringFlavor)) {
                         String data = (String) t.getTransferData(java.awt.datatransfer.DataFlavor.stringFlavor);
                         // 阈值：5000字符 (约10KB)，避免 UI 线程阻塞
                         if (data != null && data.length() > 5000) {
@@ -1290,9 +1347,10 @@ public class ModernQQFrame extends JFrame {
                 // 执行默认粘贴
                 inputArea.paste();
             }
+            
         });
 
-        inputArea.setBorder(null);
+        inputArea.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
         inputArea.setFont(UiUtils.FONT_NORMAL.deriveFont(14f));
         JScrollPane inputScroll = new JScrollPane(inputArea);
         inputScroll.setBorder(null);
@@ -1315,6 +1373,58 @@ public class ModernQQFrame extends JFrame {
         inputPanel.add(btnPanel, "cell 1 1"); // Bottom Right of input area
 
         contentPanel.add(inputPanel, "cell 0 2"); // Bottom
+    }
+
+    /**
+     * 处理粘贴的图片并发送
+     */
+    private void showImagePreviewAndSend(java.awt.Image image) {
+        // 直接发送，不弹窗
+        try {
+            // 默认保存为 PNG (无损，支持透明)
+            java.awt.image.BufferedImage bufferedImage = toBufferedImage(image);
+            File tempFile = File.createTempFile("pasted_image_" + System.currentTimeMillis(), ".png");
+            javax.imageio.ImageIO.write(bufferedImage, "png", tempFile);
+            performFileSend(tempFile);
+        } catch (Exception e) {
+            e.printStackTrace();
+            javax.swing.JOptionPane.showMessageDialog(this, "图片处理失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 静态辅助方法：复制图片到剪贴板
+     */
+    public static void copyImageToClipboard(java.awt.Image image) {
+        java.awt.datatransfer.Transferable trans = new java.awt.datatransfer.Transferable() {
+            public java.awt.datatransfer.DataFlavor[] getTransferDataFlavors() {
+                return new java.awt.datatransfer.DataFlavor[]{ java.awt.datatransfer.DataFlavor.imageFlavor };
+            }
+            public boolean isDataFlavorSupported(java.awt.datatransfer.DataFlavor flavor) {
+                return java.awt.datatransfer.DataFlavor.imageFlavor.equals(flavor);
+            }
+            public Object getTransferData(java.awt.datatransfer.DataFlavor flavor) throws java.awt.datatransfer.UnsupportedFlavorException {
+                if (!isDataFlavorSupported(flavor)) throw new java.awt.datatransfer.UnsupportedFlavorException(flavor);
+                return image;
+            }
+        };
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(trans, null);
+    }
+
+    /**
+     * 辅助方法：Image 转 BufferedImage
+     */
+    private java.awt.image.BufferedImage toBufferedImage(java.awt.Image img) {
+        if (img instanceof java.awt.image.BufferedImage) {
+            return (java.awt.image.BufferedImage) img;
+        }
+        // 创建一个 BufferedImage
+        java.awt.image.BufferedImage bimage = new java.awt.image.BufferedImage(
+                img.getWidth(null), img.getHeight(null), java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        java.awt.Graphics2D bGr = bimage.createGraphics();
+        bGr.drawImage(img, 0, 0, null);
+        bGr.dispose();
+        return bimage;
     }
 
     // --- 消息添加方法 ---
@@ -1536,13 +1646,17 @@ public class ModernQQFrame extends JFrame {
     }
 
     private com.bluelink.ui.bubble.BubblePanel renderFileBubble(boolean isSender, File file) {
+        return renderFileBubble(isSender, file, file.getName());
+    }
+
+    private com.bluelink.ui.bubble.BubblePanel renderFileBubble(boolean isSender, File file, String key) {
         JPanel wrapper = new JPanel(new MigLayout("insets 2, fillx, gap 0", "[grow]", "[]"));
         wrapper.setOpaque(false);
         com.bluelink.ui.bubble.BubblePanel bubble = com.bluelink.ui.bubble.BubbleFactory.createFileBubble(isSender,
                 file);
 
         if (isSender) {
-            sendingFileBubbles.put(file.getName(), bubble);
+            sendingFileBubbles.put(key, bubble);
             bubble.setProgress(0f);
         }
 

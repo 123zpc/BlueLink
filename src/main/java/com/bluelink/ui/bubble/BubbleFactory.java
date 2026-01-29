@@ -115,6 +115,11 @@ public class BubbleFactory {
      * 创建文件传输气泡
      */
     public static BubblePanel createFileBubble(boolean isSender, File file) {
+        // 检查是否为图片，如果是则渲染为图片气泡
+        if (isImageFile(file)) {
+            return createImageBubble(isSender, file);
+        }
+
         // 使用固定尺寸的卡片布局
         JPanel filePanel = new JPanel(new BorderLayout(10, 0)) {
             @Override
@@ -136,8 +141,8 @@ public class BubbleFactory {
         filePanel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
         // 图标区域 (左侧)
-        // 使用大图标更佳，这里暂时用系统图标居中
-        Icon icon = FileSystemView.getFileSystemView().getSystemIcon(file);
+        // 使用自定义工具类获取高清大图标
+        Icon icon = com.bluelink.util.FileIconUtils.getFileIcon(file);
         JLabel iconLabel = new JLabel(icon);
         iconLabel.setHorizontalAlignment(SwingConstants.CENTER);
         iconLabel.setPreferredSize(new Dimension(40, 50)); // 左侧 40px 宽
@@ -186,6 +191,32 @@ public class BubbleFactory {
             }
         });
 
+        JMenuItem copyFileItem = new JMenuItem("复制文件");
+        copyFileItem.setFont(UiUtils.FONT_NORMAL);
+        copyFileItem.addActionListener(e -> {
+            java.awt.datatransfer.Transferable transferable = new java.awt.datatransfer.Transferable() {
+                @Override
+                public java.awt.datatransfer.DataFlavor[] getTransferDataFlavors() {
+                    return new java.awt.datatransfer.DataFlavor[] { java.awt.datatransfer.DataFlavor.javaFileListFlavor };
+                }
+
+                @Override
+                public boolean isDataFlavorSupported(java.awt.datatransfer.DataFlavor flavor) {
+                    return java.awt.datatransfer.DataFlavor.javaFileListFlavor.equals(flavor);
+                }
+
+                @Override
+                public Object getTransferData(java.awt.datatransfer.DataFlavor flavor)
+                        throws java.awt.datatransfer.UnsupportedFlavorException, java.io.IOException {
+                    if (!isDataFlavorSupported(flavor)) {
+                        throw new java.awt.datatransfer.UnsupportedFlavorException(flavor);
+                    }
+                    return java.util.Collections.singletonList(file);
+                }
+            };
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(transferable, null);
+        });
+
         JMenuItem copyNameItem = new JMenuItem("复制文件名");
         copyNameItem.setFont(UiUtils.FONT_NORMAL);
         copyNameItem.addActionListener(e -> {
@@ -204,6 +235,7 @@ public class BubbleFactory {
         popup.add(openItem);
         popup.add(openFolderItem);
         popup.addSeparator();
+        popup.add(copyFileItem);
         popup.add(copyNameItem);
         popup.add(copyPathItem);
 
@@ -318,5 +350,119 @@ public class BubbleFactory {
         int exp = (int) (Math.log(size) / Math.log(1024));
         String pre = "KMGTPE".charAt(exp - 1) + "";
         return String.format("%.1f %sB", size / Math.pow(1024, exp), pre);
+    }
+
+    private static boolean isImageFile(File file) {
+        String name = file.getName().toLowerCase();
+        return name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") 
+            || name.endsWith(".gif") || name.endsWith(".bmp");
+    }
+
+    /**
+     * 创建图片预览气泡
+     */
+    public static BubblePanel createImageBubble(boolean isSender, File file) {
+        // 图片显示组件
+        JLabel imageLabel = new JLabel();
+        imageLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        imageLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        // 初始显示加载中
+        imageLabel.setText("加载中...");
+        
+        // 限制最大尺寸
+        int MAX_W = 250;
+        int MAX_H = 250;
+        
+        // 异步加载图片
+        new SwingWorker<ImageIcon, Void>() {
+            @Override
+            protected ImageIcon doInBackground() throws Exception {
+                // 读取图片
+                java.awt.image.BufferedImage img = null;
+                try {
+                    img = javax.imageio.ImageIO.read(file);
+                } catch (Exception e) {
+                    return null;
+                }
+                
+                if (img == null) return null;
+                
+                int w = img.getWidth();
+                int h = img.getHeight();
+                
+                if (w > MAX_W || h > MAX_H) {
+                    double ratio = (double) w / h;
+                    if (ratio > 1) { // 宽图
+                         w = MAX_W;
+                         h = (int) (MAX_W / ratio);
+                    } else { // 长图
+                         h = MAX_H;
+                         w = (int) (MAX_H * ratio);
+                    }
+                    Image scaled = img.getScaledInstance(w, h, Image.SCALE_SMOOTH);
+                    return new ImageIcon(scaled);
+                }
+                
+                return new ImageIcon(img);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    ImageIcon icon = get();
+                    if (icon != null) {
+                        imageLabel.setText(null);
+                        imageLabel.setIcon(icon);
+                        // 重新验证布局
+                        imageLabel.revalidate();
+                        imageLabel.repaint();
+                    } else {
+                        imageLabel.setText("图片加载失败");
+                    }
+                } catch (Exception e) {
+                    imageLabel.setText("Error");
+                }
+            }
+        }.execute();
+        
+        // 交互：点击打开，右键菜单
+        JPopupMenu popup = new JPopupMenu();
+        JMenuItem openItem = new JMenuItem("查看原图");
+        openItem.setFont(UiUtils.FONT_NORMAL);
+        openItem.addActionListener(e -> com.bluelink.util.FilePreviewUtils.openFile(file));
+        
+        JMenuItem copyItem = new JMenuItem("复制图片");
+        copyItem.setFont(UiUtils.FONT_NORMAL);
+        copyItem.addActionListener(e -> {
+            new Thread(() -> {
+                try {
+                    Image img = javax.imageio.ImageIO.read(file);
+                    if (img != null) {
+                        com.bluelink.ui.ModernQQFrame.copyImageToClipboard(img);
+                    }
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            }).start();
+        });
+        
+        popup.add(openItem);
+        popup.add(copyItem);
+        
+        imageLabel.setComponentPopupMenu(popup);
+        imageLabel.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseClicked(java.awt.event.MouseEvent e) {
+                if (SwingUtilities.isLeftMouseButton(e)) {
+                     // 异步打开文件，避免阻塞 EDT
+                     new Thread(() -> com.bluelink.util.FilePreviewUtils.openFile(file)).start();
+                }
+            }
+        });
+
+        BubblePanel bubble = new BubblePanel(isSender, imageLabel);
+        // 图片气泡设置背景
+        bubble.setBubbleBackground(isSender ? Color.WHITE : new Color(227, 242, 253));
+        return bubble;
     }
 }

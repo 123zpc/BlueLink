@@ -21,6 +21,7 @@ public class BluetoothSession {
     private final JnaSocketOutputStream outputStream;
     private final DataInputStream dataInputStream;
     private final long localToken = new java.util.Random().nextLong(); // 用于识别本机发送的包 (防止 Echo)
+    private final Object sendLock = new Object(); // 发送锁，防止多线程写入冲突
     private volatile boolean running = true;
     private TransferListener listener;
     private Thread readThread;
@@ -117,11 +118,14 @@ public class BluetoothSession {
         if (!running) throw new IOException("会话已关闭");
         System.out.println("[Session] 发送消息: " + message);
         byte[] packet = ProtocolWriter.createPacket(localToken, "MSG", message.getBytes("UTF-8"));
-        outputStream.write(packet);
-        outputStream.flush();
+        
+        synchronized (sendLock) {
+            outputStream.write(packet);
+            outputStream.flush();
+        }
     }
 
-    public void sendFile(File file) throws IOException {
+    public void sendFile(File file, String taskKey) throws IOException {
         if (!running) throw new IOException("会话已关闭");
         if (file.length() > 50 * 1024 * 1024) {
             throw new IOException("文件过大(限制 50MB)");
@@ -139,18 +143,26 @@ public class BluetoothSession {
         int bufferSize = 8192; // 8KB
         int total = packet.length;
         
-        while (offset < total) {
-            int toWrite = Math.min(total - offset, bufferSize);
-            outputStream.write(packet, offset, toWrite);
-            offset += toWrite;
-            
-            // 发送进度更新 (注意：这里的 total 是包总大小，包含压缩数据和头信息)
-            // 用户更关心的是文件传输的百分比，所以直接用 packet 的发送比例即可
-            if (listener != null) {
-                listener.onTransferProgress(file.getName(), offset, total, false);
+        synchronized (sendLock) {
+            while (offset < total) {
+                int toWrite = Math.min(total - offset, bufferSize);
+                outputStream.write(packet, offset, toWrite);
+                offset += toWrite;
+                
+                // 发送进度更新 (注意：这里的 total 是包总大小，包含压缩数据和头信息)
+                // 用户更关心的是文件传输的百分比，所以直接用 packet 的发送比例即可
+                if (listener != null) {
+                    // 使用 taskKey (如果是发送方，taskKey 是 UUID；如果是接收方，taskKey 是文件名)
+                    listener.onTransferProgress(taskKey != null ? taskKey : file.getName(), offset, total, false);
+                }
             }
+            outputStream.flush();
         }
-        outputStream.flush();
+    }
+
+    // 兼容旧方法
+    public void sendFile(File file) throws IOException {
+        sendFile(file, null);
     }
 
     public void close() {

@@ -98,6 +98,7 @@ jobs:
           $version = "${{ github.ref_name }}" -replace '^v',''
           @"
           [Setup]
+          UnicodeCodePage=65001
           AppName=BlueLink
           AppVersion=$version
           DefaultDirName={pf}\BlueLink
@@ -122,7 +123,7 @@ jobs:
 
           [Run]
           Filename: "{app}\BlueLink.exe"; Description: "启动 BlueLink"; Flags: nowait postinstall skipifsilent
-          "@ | Out-File -Encoding UTF8 setup.iss
+          "@ | Out-File -Encoding utf8BOM setup.iss
         shell: powershell
 
       # ================= Build EXE =================

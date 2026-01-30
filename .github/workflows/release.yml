@@ -123,7 +123,7 @@ jobs:
 
           [Run]
           Filename: "{app}\BlueLink.exe"; Description: "启动 BlueLink"; Flags: nowait postinstall skipifsilent
-          "@ | Out-File -Encoding utf8BOM setup.iss
+          "@ | Out-File -Encoding utf8 setup.iss
         shell: powershell
 
       # ================= Build EXE =================

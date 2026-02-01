@@ -91,14 +91,13 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y
         shell: powershell
-
+      
       # ================= Generate Inno Setup script =================
       - name: Generate Inno Setup script
         run: |
           $version = "${{ github.ref_name }}" -replace '^v',''
           @"
           [Setup]
-          UnicodeCodePage=65001
           AppName=BlueLink
           AppVersion=$version
           DefaultDirName={pf}\BlueLink
@@ -114,7 +113,6 @@ jobs:
           Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 
           [Files]
-          ; 使用 app-image 步骤生成的文件夹
           Source: "release\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
           [Icons]

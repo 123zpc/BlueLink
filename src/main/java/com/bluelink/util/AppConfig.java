@@ -129,4 +129,27 @@ public class AppConfig {
     public static void setEnterToSend(boolean enterToSend) {
         saveConfig("enter.to.send", String.valueOf(enterToSend));
     }
+
+    /**
+     * 获取 AI API Base URL
+     * 默认为 DeepSeek 官方 API
+     */
+    public static String getAiApiUrl() {
+        return props.getProperty("ai.api.url", "https://api.deepseek.com/v1/chat/completions");
+    }
+
+    public static void setAiApiUrl(String url) {
+        saveConfig("ai.api.url", url);
+    }
+
+    /**
+     * 获取 AI API Key
+     */
+    public static String getAiApiKey() {
+        return props.getProperty("ai.api.key", "");
+    }
+
+    public static void setAiApiKey(String key) {
+        saveConfig("ai.api.key", key);
+    }
 }

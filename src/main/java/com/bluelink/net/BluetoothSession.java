@@ -43,16 +43,17 @@ public class BluetoothSession {
         System.out.println("[Session] 开始读取循环, LocalToken=" + localToken);
         while (running) {
             try {
-                ProtocolReader.Packet packet = ProtocolReader.readPacket(dataInputStream, (senderToken, fileName, current, total) -> {
-                    // 如果是自己发的包 (Echo)，则忽略进度更新
-                    if (senderToken == localToken) {
-                        return;
-                    }
-                    if (listener != null && !"MSG".equals(fileName)) {
-                        listener.onTransferProgress(fileName, current, total, true);
-                    }
-                });
-                
+                ProtocolReader.Packet packet = ProtocolReader.readPacket(dataInputStream,
+                        (senderToken, fileName, current, total) -> {
+                            // 如果是自己发的包 (Echo)，则忽略进度更新
+                            if (senderToken == localToken) {
+                                return;
+                            }
+                            if (listener != null && !"MSG".equals(fileName)) {
+                                listener.onTransferProgress(fileName, current, total, true);
+                            }
+                        });
+
                 if (packet == null) {
                     System.out.println("[Session] 读取到 EOF，连接断开");
                     close();
@@ -70,6 +71,16 @@ public class BluetoothSession {
                     if (listener != null) {
                         listener.onMessageReceived("Remote", text);
                     }
+                } else if ("AI_REQ".equals(packet.name)) {
+                    String prompt = new String(packet.data, "UTF-8");
+                    if (listener != null) {
+                        listener.onAiRequest(prompt, this);
+                    }
+                } else if ("AI_RESP".equals(packet.name)) {
+                    String chunk = new String(packet.data, "UTF-8");
+                    if (listener != null) {
+                        listener.onAiResponse(chunk);
+                    }
                 } else {
                     // 保存文件到配置的下载目录
                     String downloadDir = com.bluelink.util.AppConfig.getDownloadPath();
@@ -77,7 +88,7 @@ public class BluetoothSession {
                     if (!dir.exists()) {
                         dir.mkdirs();
                     }
-                    
+
                     // 处理重名文件：filename.txt -> filename(1).txt
                     File file = new File(dir, packet.name);
                     String fileName = packet.name;
@@ -88,7 +99,7 @@ public class BluetoothSession {
                         baseName = fileName.substring(0, dotIndex);
                         ext = fileName.substring(dotIndex);
                     }
-                    
+
                     int counter = 1;
                     while (file.exists()) {
                         file = new File(dir, baseName + "(" + counter + ")" + ext);
@@ -115,10 +126,11 @@ public class BluetoothSession {
     }
 
     public void sendMessage(String message) throws IOException {
-        if (!running) throw new IOException("会话已关闭");
+        if (!running)
+            throw new IOException("会话已关闭");
         System.out.println("[Session] 发送消息: " + message);
         byte[] packet = ProtocolWriter.createPacket(localToken, "MSG", message.getBytes("UTF-8"));
-        
+
         synchronized (sendLock) {
             outputStream.write(packet);
             outputStream.flush();
@@ -126,7 +138,8 @@ public class BluetoothSession {
     }
 
     public void sendFile(File file, String taskKey) throws IOException {
-        if (!running) throw new IOException("会话已关闭");
+        if (!running)
+            throw new IOException("会话已关闭");
         if (file.length() > 50 * 1024 * 1024) {
             throw new IOException("文件过大(限制 50MB)");
         }
@@ -137,22 +150,21 @@ public class BluetoothSession {
         }
 
         byte[] packet = ProtocolWriter.createPacket(localToken, file.getName(), fileData);
-        
+
         // 分块写入以支持发送进度
         int offset = 0;
         int bufferSize = 8192; // 8KB
         int total = packet.length;
-        
+
         synchronized (sendLock) {
             while (offset < total) {
                 int toWrite = Math.min(total - offset, bufferSize);
                 outputStream.write(packet, offset, toWrite);
                 offset += toWrite;
-                
+
                 // 发送进度更新 (注意：这里的 total 是包总大小，包含压缩数据和头信息)
                 // 用户更关心的是文件传输的百分比，所以直接用 packet 的发送比例即可
                 if (listener != null) {
-                    // 使用 taskKey (如果是发送方，taskKey 是 UUID；如果是接收方，taskKey 是文件名)
                     listener.onTransferProgress(taskKey != null ? taskKey : file.getName(), offset, total, false);
                 }
             }
@@ -163,6 +175,34 @@ public class BluetoothSession {
     // 兼容旧方法
     public void sendFile(File file) throws IOException {
         sendFile(file, null);
+    }
+
+    /**
+     * 发送 AI 请求 (Client -> Host)
+     */
+    public void sendAiRequest(String prompt) throws IOException {
+        if (!running)
+            throw new IOException("会话已关闭");
+        System.out.println("[Session] 发送 AI 请求");
+        byte[] packet = ProtocolWriter.createPacket(localToken, "AI_REQ", prompt.getBytes("UTF-8"));
+        synchronized (sendLock) {
+            outputStream.write(packet);
+            outputStream.flush();
+        }
+    }
+
+    /**
+     * 发送 AI 响应片段 (Host -> Client)
+     */
+    public void sendAiResponse(String chunk) throws IOException {
+        if (!running)
+            throw new IOException("会话已关闭");
+        // System.out.println("[Session] 发送 AI 响应片段: " + chunk.length());
+        byte[] packet = ProtocolWriter.createPacket(localToken, "AI_RESP", chunk.getBytes("UTF-8"));
+        synchronized (sendLock) {
+            outputStream.write(packet);
+            outputStream.flush();
+        }
     }
 
     public void close() {
@@ -177,7 +217,7 @@ public class BluetoothSession {
             listener.onConnectionStatusChanged(false, null);
         }
     }
-    
+
     public boolean isClosed() {
         return !running;
     }

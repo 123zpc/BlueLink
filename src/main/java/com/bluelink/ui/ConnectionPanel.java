@@ -324,7 +324,8 @@ public class ConnectionPanel extends JPanel {
     }
 
     private void startScan() {
-        if (isScanning) return; // 防止重复点击
+        if (isScanning)
+            return; // 防止重复点击
 
         String targetCode = codeInput.getCode().trim(); // 去除可能的空白字符
         System.out.println("开始扫描，目标连接码: '" + targetCode + "'");
@@ -406,7 +407,7 @@ public class ConnectionPanel extends JPanel {
                 System.out.println("正在执行设备发现...");
                 List<BluetoothUtils.BluetoothDevice> devices = BluetoothUtils.discoverDevices(10);
                 System.out.println("设备发现完成，找到 " + devices.size() + " 个设备");
-                
+
                 BluetoothUtils.BluetoothDevice target = BluetoothUtils.findDeviceByCode(targetCode, devices);
                 if (target != null) {
                     System.out.println("找到目标设备: " + target);
@@ -606,7 +607,6 @@ public class ConnectionPanel extends JPanel {
             repaint();
         });
     }
-
 
     /**
      * 设置是否从设置页面进入

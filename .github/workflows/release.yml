@@ -96,7 +96,7 @@ jobs:
       - name: Generate Inno Setup script
         run: |
           $version = "${{ github.ref_name }}" -replace '^v',''
-          $issContent = @"
+          @"
           [Setup]
           AppName=BlueLink
           AppVersion=$version
@@ -112,9 +112,6 @@ jobs:
           [Languages]
           Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 
-          [CustomMessages]
-          chinesesimp.LaunchProgram=启动 BlueLink
-
           [Files]
           Source: "release\BlueLink\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
@@ -123,10 +120,8 @@ jobs:
           Name: "{commondesktop}\BlueLink"; Filename: "{app}\BlueLink.exe"
 
           [Run]
-          Filename: "{app}\BlueLink.exe"; Description: "{cm:LaunchProgram}"; Flags: nowait postinstall skipifsilent
-          "@
-          # 强制指定用 ANSI (Windows-1252/GBK 兼容) 写入，或者使用 utf8 加强制标志
-          [System.IO.File]::WriteAllText("$(Get-Location)\setup.iss", $issContent, [System.Text.Encoding]::GetEncoding("gb2312"))
+          Filename: "{app}\BlueLink.exe"; Description: "Start BlueLink"; Flags: nowait postinstall skipifsilent
+          "@ | Out-File -Encoding utf8 setup.iss
         shell: powershell
         
       # ================= Build EXE =================

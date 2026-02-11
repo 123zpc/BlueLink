@@ -226,4 +226,17 @@ public abstract class BaseChatPanel extends JPanel {
         chatArea.add(wrapper, "growx, wrap");
         scrollToBottom();
     }
+
+    public void insertSystemTipAt(int index, String text) {
+        JLabel tip = new JLabel(text);
+        tip.setFont(UiUtils.FONT_NORMAL.deriveFont(10f));
+        tip.setForeground(Color.GRAY);
+        tip.setHorizontalAlignment(SwingConstants.CENTER);
+
+        JPanel wrapper = new JPanel(new MigLayout("insets 5, fillx, alignx center", "[center]", "[]"));
+        wrapper.setOpaque(false);
+        wrapper.add(tip);
+
+        chatArea.add(wrapper, "growx, wrap", index);
+    }
 }

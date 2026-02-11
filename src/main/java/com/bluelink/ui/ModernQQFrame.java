@@ -174,7 +174,27 @@ public class ModernQQFrame extends JFrame {
         // Default to Main Chat
         switchContent(CARD_MAIN_CHAT);
         // Load history if needed
-        SwingUtilities.invokeLater(() -> mainChatPanel.loadHistory());
+        // SwingUtilities.invokeLater(() -> mainChatPanel.loadHistory()); // Removed duplicate call
+        // mainChatPanel will handle its own initial load or via user interaction
+        
+        // However, we DO need to trigger initial load if it hasn't been loaded.
+        // But MainChatPanel handles scrolling to bottom on first load.
+        // Let's call it ONCE here, but ensure MainChatPanel logic handles the "don't double load"
+        
+        // Actually, if we call it here, it corresponds to the first "queryId=-1" in the log.
+        // If we DON'T call it here, who calls it?
+        // The scroll listener is only added AFTER first load.
+        // So we MUST call it here.
+        SwingUtilities.invokeLater(() -> mainChatPanel.initHistory());
+    }
+
+    private com.bluelink.ai.SpringAiService aiService;
+
+    public void setAiService(com.bluelink.ai.SpringAiService aiService) {
+        this.aiService = aiService;
+        if (aiChatPanel != null) {
+            aiChatPanel.setAiService(aiService);
+        }
     }
 
     public void loadHistory() {
@@ -197,6 +217,11 @@ public class ModernQQFrame extends JFrame {
     private void createSidebar() {
         sidebarPanel = new JPanel(new MigLayout("insets 10, flowy, alignx center, gap 0", "[center]"));
         sidebarPanel.setBackground(UiUtils.COLOR_BG_SIDEBAR);
+        refreshSidebar();
+    }
+
+    private void refreshSidebar() {
+        sidebarPanel.removeAll();
 
         // 头像组件
         JComponent avatar = new JComponent() {
@@ -248,80 +273,85 @@ public class ModernQQFrame extends JFrame {
         sidebarPanel.add(avatar);
         sidebarPanel.add(codeLabel, "gaptop 5");
 
-        // AI 入口按钮
-        JComponent aiBtn = new JComponent() {
-            @Override
-            protected void paintComponent(Graphics g) {
-                super.paintComponent(g);
-                UiUtils.enableAntialiasing(g);
-                Graphics2D g2 = (Graphics2D) g;
+        if (com.bluelink.util.AppConfig.isAiEnabled()) {
+            // 聊天入口按钮
+            JComponent chatBtn = new JComponent() {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    super.paintComponent(g);
+                    UiUtils.enableAntialiasing(g);
+                    Graphics2D g2 = (Graphics2D) g;
 
-                g2.setColor(new Color(110, 80, 200));
-                Shape circle = new Ellipse2D.Double(0, 0, getWidth(), getHeight());
-                g2.fill(circle);
+                    g2.setColor(UiUtils.COLOR_PRIMARY);
+                    Shape circle = new Ellipse2D.Double(0, 0, getWidth(), getHeight());
+                    g2.fill(circle);
 
-                g2.setColor(Color.WHITE);
-                g2.setFont(UiUtils.FONT_BOLD.deriveFont(14f));
-                FontMetrics fm = g2.getFontMetrics();
-                String text = "AI";
-                int x = (getWidth() - fm.stringWidth(text)) / 2;
-                int y = ((getHeight() - fm.getHeight()) / 2) + fm.getAscent();
-                y -= 2;
-                g2.drawString(text, x, y);
-            }
+                    g2.setColor(Color.WHITE);
+                    g2.setFont(UiUtils.FONT_BOLD.deriveFont(14f));
+                    FontMetrics fm = g2.getFontMetrics();
+                    String text = "聊";
+                    int x = (getWidth() - fm.stringWidth(text)) / 2;
+                    int y = ((getHeight() - fm.getHeight()) / 2) + fm.getAscent();
+                    y -= 2;
+                    g2.drawString(text, x, y);
+                }
 
-            @Override
-            public Dimension getPreferredSize() {
-                return new Dimension(40, 40);
-            }
-        };
-        aiBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        aiBtn.setToolTipText("AI 助手");
-        aiBtn.addMouseListener(new java.awt.event.MouseAdapter() {
-            @Override
-            public void mouseClicked(java.awt.event.MouseEvent e) {
-                switchContent(CARD_AI_CHAT);
-            }
-        });
+                @Override
+                public Dimension getPreferredSize() {
+                    return new Dimension(40, 40);
+                }
+            };
+            chatBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            chatBtn.setToolTipText("聊天列表");
+            chatBtn.addMouseListener(new java.awt.event.MouseAdapter() {
+                @Override
+                public void mouseClicked(java.awt.event.MouseEvent e) {
+                    switchContent(CARD_MAIN_CHAT);
+                }
+            });
 
-        // 聊天入口按钮
-        JComponent chatBtn = new JComponent() {
-            @Override
-            protected void paintComponent(Graphics g) {
-                super.paintComponent(g);
-                UiUtils.enableAntialiasing(g);
-                Graphics2D g2 = (Graphics2D) g;
+            // AI 入口按钮
+            JComponent aiBtn = new JComponent() {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    super.paintComponent(g);
+                    UiUtils.enableAntialiasing(g);
+                    Graphics2D g2 = (Graphics2D) g;
 
-                g2.setColor(UiUtils.COLOR_PRIMARY);
-                Shape circle = new Ellipse2D.Double(0, 0, getWidth(), getHeight());
-                g2.fill(circle);
+                    g2.setColor(new Color(110, 80, 200));
+                    Shape circle = new Ellipse2D.Double(0, 0, getWidth(), getHeight());
+                    g2.fill(circle);
 
-                g2.setColor(Color.WHITE);
-                g2.setFont(UiUtils.FONT_BOLD.deriveFont(14f));
-                FontMetrics fm = g2.getFontMetrics();
-                String text = "聊";
-                int x = (getWidth() - fm.stringWidth(text)) / 2;
-                int y = ((getHeight() - fm.getHeight()) / 2) + fm.getAscent();
-                y -= 2;
-                g2.drawString(text, x, y);
-            }
+                    g2.setColor(Color.WHITE);
+                    g2.setFont(UiUtils.FONT_BOLD.deriveFont(14f));
+                    FontMetrics fm = g2.getFontMetrics();
+                    String text = "AI";
+                    int x = (getWidth() - fm.stringWidth(text)) / 2;
+                    int y = ((getHeight() - fm.getHeight()) / 2) + fm.getAscent();
+                    y -= 2;
+                    g2.drawString(text, x, y);
+                }
 
-            @Override
-            public Dimension getPreferredSize() {
-                return new Dimension(40, 40);
-            }
-        };
-        chatBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        chatBtn.setToolTipText("聊天列表");
-        chatBtn.addMouseListener(new java.awt.event.MouseAdapter() {
-            @Override
-            public void mouseClicked(java.awt.event.MouseEvent e) {
-                switchContent(CARD_MAIN_CHAT);
-            }
-        });
+                @Override
+                public Dimension getPreferredSize() {
+                    return new Dimension(40, 40);
+                }
+            };
+            aiBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            aiBtn.setToolTipText("AI 助手");
+            aiBtn.addMouseListener(new java.awt.event.MouseAdapter() {
+                @Override
+                public void mouseClicked(java.awt.event.MouseEvent e) {
+                    switchContent(CARD_AI_CHAT);
+                }
+            });
 
-        sidebarPanel.add(chatBtn, "gaptop 5");
-        sidebarPanel.add(aiBtn, "gaptop 5");
+            sidebarPanel.add(chatBtn, "gaptop 5");
+            sidebarPanel.add(aiBtn, "gaptop 5");
+        }
+
+        sidebarPanel.revalidate();
+        sidebarPanel.repaint();
     }
 
     // --- Network & DragDrop ---
@@ -350,33 +380,32 @@ public class ModernQQFrame extends JFrame {
         @Override
         public void onAiRequest(String prompt, com.bluelink.net.BluetoothSession session) {
             System.out.println("[UI] 收到 AI 请求: " + prompt);
-            String apiUrl = com.bluelink.util.AppConfig.getAiApiUrl();
-            String apiKey = com.bluelink.util.AppConfig.getAiApiKey();
 
-            if (apiKey.isEmpty()) {
+            if (aiService == null) {
                 try {
-                    session.sendAiResponse("Error: Host 未配置 AI API Key");
+                    session.sendAiResponse("Error: Host AI 服务未就绪");
                 } catch (Exception e) {
                 }
                 return;
             }
 
-            com.bluelink.ai.SimpleAiClient.streamChat(apiUrl, apiKey, prompt,
-                    chunk -> {
-                        try {
-                            session.sendAiResponse(chunk);
-                        } catch (Exception e) {
-                            e.printStackTrace();
-                        }
-                    },
-                    () -> {
-                    },
-                    err -> {
-                        try {
-                            session.sendAiResponse("\n[Error: " + err + "]");
-                        } catch (Exception e) {
-                        }
-                    });
+            aiService.streamChat(prompt)
+                    .subscribe(
+                            chunk -> {
+                                try {
+                                    session.sendAiResponse(chunk);
+                                } catch (Exception e) {
+                                    e.printStackTrace();
+                                }
+                            },
+                            err -> {
+                                try {
+                                    session.sendAiResponse("\n[Error: " + err.getMessage() + "]");
+                                } catch (Exception e) {
+                                }
+                            },
+                            () -> {
+                            });
         }
 
         @Override
@@ -460,10 +489,14 @@ public class ModernQQFrame extends JFrame {
         java.util.concurrent.atomic.AtomicReference<String> tempPath = new java.util.concurrent.atomic.AtomicReference<>(
                 com.bluelink.util.AppConfig.getDownloadPath());
 
+        java.util.concurrent.atomic.AtomicBoolean tempAiEnabled = new java.util.concurrent.atomic.AtomicBoolean(
+                com.bluelink.util.AppConfig.isAiEnabled());
         java.util.concurrent.atomic.AtomicReference<String> tempAiUrl = new java.util.concurrent.atomic.AtomicReference<>(
                 com.bluelink.util.AppConfig.getAiApiUrl());
         java.util.concurrent.atomic.AtomicReference<String> tempAiKey = new java.util.concurrent.atomic.AtomicReference<>(
                 com.bluelink.util.AppConfig.getAiApiKey());
+        java.util.concurrent.atomic.AtomicReference<String> tempAiModel = new java.util.concurrent.atomic.AtomicReference<>(
+                com.bluelink.util.AppConfig.getAiModel());
 
         JButton saveBtn = new JButton("保存设置");
         saveBtn.setBackground(UiUtils.COLOR_PRIMARY);
@@ -479,8 +512,10 @@ public class ModernQQFrame extends JFrame {
             boolean changed = (tempEnterToSend.get() != this.enterToSend)
                     || (tempTimeout.get() != com.bluelink.util.AppConfig.getConnectionTimeoutSeconds())
                     || (!tempPath.get().equals(com.bluelink.util.AppConfig.getDownloadPath()))
+                    || (tempAiEnabled.get() != com.bluelink.util.AppConfig.isAiEnabled())
                     || (!tempAiUrl.get().equals(com.bluelink.util.AppConfig.getAiApiUrl()))
-                    || (!tempAiKey.get().equals(com.bluelink.util.AppConfig.getAiApiKey()));
+                    || (!tempAiKey.get().equals(com.bluelink.util.AppConfig.getAiApiKey()))
+                    || (!tempAiModel.get().equals(com.bluelink.util.AppConfig.getAiModel()));
 
             saveBtn.setEnabled(changed);
         };
@@ -500,14 +535,23 @@ public class ModernQQFrame extends JFrame {
             com.bluelink.util.AppConfig.setEnterToSend(this.enterToSend);
             com.bluelink.util.AppConfig.setConnectionTimeout(tempTimeout.get());
             com.bluelink.util.AppConfig.setDownloadPath(tempPath.get());
+            com.bluelink.util.AppConfig.setAiEnabled(tempAiEnabled.get());
             com.bluelink.util.AppConfig.setAiApiUrl(tempAiUrl.get());
             com.bluelink.util.AppConfig.setAiApiKey(tempAiKey.get());
+            com.bluelink.util.AppConfig.setAiModel(tempAiModel.get());
+            
+            // Refresh sidebar to reflect AI toggle
+            refreshSidebar();
+            if (!tempAiEnabled.get()) {
+                switchContent(CARD_MAIN_CHAT);
+            }
+            
             dialog.dispose();
         });
 
         // Use helper to keep main readable
         JPanel mainPanel = createSettingsContent(dialog, closeAction, saveBtn, tempEnterToSend, tempTimeout, tempPath,
-                tempAiUrl, tempAiKey, checkChanges);
+                tempAiEnabled, tempAiUrl, tempAiKey, tempAiModel, checkChanges);
 
         dialog.setContentPane(mainPanel);
         dialog.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
@@ -523,8 +567,10 @@ public class ModernQQFrame extends JFrame {
             java.util.concurrent.atomic.AtomicBoolean tempEnterToSend,
             java.util.concurrent.atomic.AtomicInteger tempTimeout,
             java.util.concurrent.atomic.AtomicReference<String> tempPath,
+            java.util.concurrent.atomic.AtomicBoolean tempAiEnabled,
             java.util.concurrent.atomic.AtomicReference<String> tempAiUrl,
             java.util.concurrent.atomic.AtomicReference<String> tempAiKey,
+            java.util.concurrent.atomic.AtomicReference<String> tempAiModel,
             Runnable checkChanges) {
         JPanel mainPanel = new JPanel() {
             protected void paintComponent(Graphics g) {
@@ -685,6 +731,24 @@ public class ModernQQFrame extends JFrame {
         // Tab 3: AI
         JPanel aiPanel = new JPanel(new MigLayout("insets 10, fillx, wrap 1"));
         aiPanel.setOpaque(false);
+        
+        JPanel switchPanel = new JPanel(new MigLayout("insets 0", "[]10[]"));
+        switchPanel.setOpaque(false);
+        
+        SwitchButton enableAiSwitch = new SwitchButton(tempAiEnabled.get());
+        enableAiSwitch.addActionListener(e -> {
+            tempAiEnabled.set(enableAiSwitch.isSelected());
+            checkChanges.run();
+        });
+        
+        JLabel switchLabel = new JLabel("启用 AI 功能");
+        switchLabel.setFont(UiUtils.FONT_NORMAL);
+        
+        switchPanel.add(enableAiSwitch);
+        switchPanel.add(switchLabel);
+        
+        aiPanel.add(switchPanel, "wrap");
+
         aiPanel.add(new JLabel("API URL:"));
         JTextField urlF = new JTextField(tempAiUrl.get());
         urlF.getDocument().addDocumentListener(getSimpleListener(() -> {
@@ -700,6 +764,15 @@ public class ModernQQFrame extends JFrame {
             checkChanges.run();
         }));
         aiPanel.add(keyF, "growx");
+
+        aiPanel.add(new JLabel("Model Name:"));
+        JTextField modelF = new JTextField(tempAiModel.get());
+        modelF.getDocument().addDocumentListener(getSimpleListener(() -> {
+            tempAiModel.set(modelF.getText());
+            checkChanges.run();
+        }));
+        aiPanel.add(modelF, "growx");
+
         tabs.addTab("AI", aiPanel);
 
         // Tab 4: Connect

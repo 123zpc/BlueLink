@@ -6,6 +6,7 @@ import com.bluelink.net.BluetoothSession;
 import com.bluelink.ui.bubble.BubbleFactory;
 import com.bluelink.ui.bubble.BubblePanel;
 import com.bluelink.util.UiUtils;
+import net.miginfocom.swing.MigLayout;
 
 import javax.swing.*;
 import java.awt.*;
@@ -37,6 +38,10 @@ public class MainChatPanel extends BaseChatPanel {
     private final java.util.Map<String, BubblePanel> activeFileBubbles = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Map<String, BubblePanel> sendingFileBubbles = new java.util.concurrent.ConcurrentHashMap<>();
 
+    // 监听器引用，用于在首次加载后再添加
+    private java.awt.event.AdjustmentListener scrollListener;
+    private JPanel loadingPanel;
+
     public MainChatPanel(ModernQQFrame parentFrame) {
         super();
         this.parentFrame = parentFrame;
@@ -44,6 +49,17 @@ public class MainChatPanel extends BaseChatPanel {
 
         // 核心功能初始化
         setupInputExtensions(); // 粘贴、拖拽等
+        
+        // 初始化滚动监听器，但暂不添加到 ScrollBar
+        scrollListener = e -> {
+            if (!e.getValueIsAdjusting() && e.getValue() == 0) {
+                // 仅当有可滚动内容时才加载历史 (避免初始化时重复加载)
+                JScrollBar vBar = chatScrollPane.getVerticalScrollBar();
+                if (vBar.getMaximum() > vBar.getVisibleAmount()) {
+                    loadHistory();
+                }
+            }
+        };
     }
 
     public void setSession(BluetoothSession session) {
@@ -265,18 +281,82 @@ public class MainChatPanel extends BaseChatPanel {
         }).start();
     }
 
+    /**
+     * 初始化历史记录 (仅当从未加载过时执行)
+     * 避免外部重复调用导致自动加载下一页
+     */
+    public void initHistory() {
+        if (minLoadedId == Long.MAX_VALUE) {
+            loadHistory();
+        }
+    }
+
+    private JPanel getLoadingPanel() {
+        if (loadingPanel == null) {
+            JLabel label = new JLabel("加载中...");
+            label.setFont(UiUtils.FONT_NORMAL.deriveFont(10f));
+            label.setForeground(Color.GRAY);
+            label.setHorizontalAlignment(SwingConstants.CENTER);
+
+            loadingPanel = new JPanel(new MigLayout("insets 5, fillx, alignx center", "[center]", "[]"));
+            loadingPanel.setOpaque(false);
+            loadingPanel.add(label);
+        }
+        return loadingPanel;
+    }
+
     public void loadHistory() {
-        if (hasLoadedAllHistory)
+        if (hasLoadedAllHistory || isLoadingHistory)
             return;
 
-        java.util.List<TransferDao.LogItem> list = TransferDao.loadHistory(-1, 25);
-        if (list.isEmpty()) {
-            hasLoadedAllHistory = true;
-            addSystemTip("- 已显示全部历史消息 -");
+        isLoadingHistory = true;
+
+        // 记录当前滚动位置和高度
+        JScrollBar vertical = chatScrollPane.getVerticalScrollBar();
+        int oldHeight = vertical.getMaximum();
+
+        // 如果是首次加载 (minLoadedId == Long.MAX_VALUE)，使用 -1 查询最新
+        long queryId = (minLoadedId == Long.MAX_VALUE) ? -1 : minLoadedId;
+
+        // 首次加载为了极速体验，直接在当前线程(EDT)执行 (本地DB通常很快 <10ms)
+        // 这样可以避免异步造成的闪烁和空白等待
+        if (queryId == -1) {
+            try {
+                java.util.List<TransferDao.LogItem> list = TransferDao.loadHistory(queryId, 20);
+                updateHistoryUI(list, queryId, vertical, oldHeight);
+            } catch (Exception e) {
+                e.printStackTrace();
+                isLoadingHistory = false;
+            }
             return;
         }
 
-        // Reverse order for insert at top
+        // 历史分页加载显示 Loading，并使用异步线程
+        JPanel loading = getLoadingPanel();
+        chatArea.add(loading, "growx, wrap", 0);
+        chatArea.revalidate();
+        chatArea.repaint();
+
+        new Thread(() -> {
+            java.util.List<TransferDao.LogItem> list = TransferDao.loadHistory(queryId, 20);
+            SwingUtilities.invokeLater(() -> {
+                chatArea.remove(loading);
+                updateHistoryUI(list, queryId, vertical, oldHeight);
+            });
+        }).start();
+    }
+
+    private void updateHistoryUI(java.util.List<TransferDao.LogItem> list, long queryId, JScrollBar vertical, int oldHeight) {
+        if (list.isEmpty()) {
+            hasLoadedAllHistory = true;
+            insertSystemTipAt(0, "--- 已显示全部历史消息 ---");
+            isLoadingHistory = false;
+            chatArea.revalidate();
+            chatArea.repaint();
+            return;
+        }
+
+        // 倒序插入到顶部
         for (int i = list.size() - 1; i >= 0; i--) {
             TransferDao.LogItem item = list.get(i);
             if ("TEXT".equals(item.type)) {
@@ -288,6 +368,35 @@ public class MainChatPanel extends BaseChatPanel {
                 minLoadedId = item.id;
         }
 
-        scrollToBottom();
+        // 刷新布局
+        chatArea.revalidate();
+
+        // 恢复滚动位置
+        // 始终使用 invokeLater 确保在 Swing 渲染周期中执行布局更新后的逻辑
+        SwingUtilities.invokeLater(() -> {
+            // 关键：强制让 ScrollPane 更新布局状态，确保 getMaximum 获取到最新值
+            // revalidate 只是标记无效，validate 才会立即触发布局计算
+            chatArea.validate(); 
+            chatScrollPane.validate();
+            
+            JScrollBar vBar = chatScrollPane.getVerticalScrollBar();
+
+            if (queryId == -1) {
+                // 首次加载，滚动到底部
+                vBar.setValue(vBar.getMaximum());
+                
+                // 延迟添加监听器，防止 setValue 触发的 AdjustmentEvent 导致循环
+                // 再次 invokeLater 确保在滚动动作完成后才挂载监听
+                SwingUtilities.invokeLater(() -> {
+                    vBar.removeAdjustmentListener(scrollListener);
+                    vBar.addAdjustmentListener(scrollListener);
+                });
+            } else {
+                // 历史加载，保持视觉位置不变
+                int newHeight = vertical.getMaximum();
+                vertical.setValue(newHeight - oldHeight);
+            }
+            isLoadingHistory = false;
+        });
     }
 }

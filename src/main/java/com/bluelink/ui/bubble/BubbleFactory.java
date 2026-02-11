@@ -25,9 +25,9 @@ public class BubbleFactory {
         textArea.setFont(UiUtils.FONT_NORMAL);
 
         if (isSender) {
-            textArea.setForeground(Color.BLACK); // 发送者: 白底黑字
+            textArea.setForeground(Color.WHITE); // 发送者 (用户): 蓝底白字
         } else {
-            textArea.setForeground(Color.WHITE); // 接收者: 蓝底白字
+            textArea.setForeground(Color.BLACK); // 接收者 (AI): 白底黑字
         }
 
         // 添加右键菜单
@@ -51,9 +51,74 @@ public class BubbleFactory {
     }
 
     /**
+     * 创建 Markdown (HTML) 气泡
+     */
+    public static BubblePanel createMarkdownBubble(boolean isSender, String htmlContent) {
+        JTextPane textPane = new JTextPane();
+        textPane.setContentType("text/html");
+        textPane.setText(htmlContent);
+        textPane.setOpaque(false);
+        textPane.setEditable(false);
+        textPane.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
+        // HTML Renderer often ignores setFont, but we set it anyway
+        textPane.setFont(UiUtils.FONT_NORMAL);
+
+        if (isSender) {
+            textPane.setForeground(Color.WHITE);
+        } else {
+            textPane.setForeground(Color.BLACK); 
+            // 注意：HTML 模式下 Foreground 可能被 HTML 样式覆盖，需要 CSS 控制
+        }
+        
+        // 简单的自适应逻辑：HTML 内容较难精确计算，这里使用一个包装器
+        // 或者我们可以简单复用 AdaptiveTextArea 的思路，但这对于 JTextPane (Complex View) 可能不适用
+        // 简化方案：固定最大宽度，让 MigLayout 处理高度
+        
+        // 添加右键菜单
+        JPopupMenu popup = new JPopupMenu();
+        JMenuItem copyItem = new JMenuItem("复制");
+        copyItem.addActionListener(e -> {
+            textPane.copy();
+            if (textPane.getSelectedText() == null) {
+                // HTML Copy is tricky, strip tags for clipboard? Or just copy raw?
+                // Default copy might copy formatted text.
+                // Let's manually copy plain text representation
+                try {
+                    String plainText = textPane.getDocument().getText(0, textPane.getDocument().getLength());
+                    java.awt.datatransfer.StringSelection selection = new java.awt.datatransfer.StringSelection(plainText);
+                    Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, null);
+                } catch (Exception ex) {}
+            }
+        });
+        popup.add(copyItem);
+        textPane.setComponentPopupMenu(popup);
+
+        return new BubblePanel(isSender, textPane);
+    }
+
+    /**
+     * 创建专用的 AI 消息气泡 (支持 Markdown 和 流式传输)
+     */
+    public static BubblePanel createAiThinkingBubble(String sessionId) {
+        // 创建一个初始的 "Thinking..." 气泡
+        JTextPane textPane = new JTextPane();
+        textPane.setContentType("text/html");
+        textPane.setText("<html><body><i>Thinking...</i></body></html>");
+        textPane.setOpaque(false);
+        textPane.setEditable(false);
+        textPane.setFont(UiUtils.FONT_NORMAL);
+        textPane.setForeground(Color.BLACK); // AI is Receiver (White Bubble) -> Black Text
+        
+        return new BubblePanel(false, textPane);
+    }
+
+    /**
      * 自适应大小的文本区域
      */
     private static class AdaptiveTextArea extends JTextArea {
+        private Dimension cachedSize = null;
+        private int lastMaxWidth = -1;
+
         public AdaptiveTextArea(String text) {
             super(text);
             setLineWrap(true);
@@ -76,15 +141,21 @@ public class BubbleFactory {
             // 最小值保护 (不能太窄)
             maxAvailableWidth = Math.max(maxAvailableWidth, 200);
 
+            // 检查缓存
+            if (cachedSize != null && lastMaxWidth == maxAvailableWidth) {
+                return cachedSize;
+            }
+
             // 计算该文本全部显示在一行所需的宽度
             FontMetrics fm = getFontMetrics(getFont());
             int textWidthRaw = fm.stringWidth(getText());
             Insets insets = getInsets();
             int totalTextWidth = textWidthRaw + insets.left + insets.right + 10; // extra padding
 
+            Dimension result;
             if (totalTextWidth <= maxAvailableWidth) {
                 // 如果单行能放下，就返回单行的宽度（高度通常不需变，除非 d.height 异常）
-                return new Dimension(totalTextWidth, d.height);
+                result = new Dimension(totalTextWidth, d.height);
             } else {
                 // 如果需要换行，利用 View 机制精确计算高度
 
@@ -106,8 +177,13 @@ public class BubbleFactory {
                     prefHeight = rows * fm.getHeight() + insets.top + insets.bottom;
                 }
 
-                return new Dimension(maxAvailableWidth, prefHeight);
+                result = new Dimension(maxAvailableWidth, prefHeight);
             }
+
+            // 更新缓存
+            lastMaxWidth = maxAvailableWidth;
+            cachedSize = result;
+            return result;
         }
     }
 
@@ -142,11 +218,31 @@ public class BubbleFactory {
 
         // 图标区域 (左侧)
         // 使用自定义工具类获取高清大图标
-        Icon icon = com.bluelink.util.FileIconUtils.getFileIcon(file);
-        JLabel iconLabel = new JLabel(icon);
+        // Icon icon = com.bluelink.util.FileIconUtils.getFileIcon(file);
+        JLabel iconLabel = new JLabel(); // 先不设置图标，或者设置默认图标
+        iconLabel.setIcon(UIManager.getIcon("FileView.fileIcon")); // 默认图标
         iconLabel.setHorizontalAlignment(SwingConstants.CENTER);
         iconLabel.setPreferredSize(new Dimension(40, 50)); // 左侧 40px 宽
         filePanel.add(iconLabel, BorderLayout.WEST);
+
+        // 异步加载真实图标
+        new SwingWorker<Icon, Void>() {
+            @Override
+            protected Icon doInBackground() {
+                return com.bluelink.util.FileIconUtils.getFileIcon(file);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    Icon icon = get();
+                    if (icon != null) {
+                        iconLabel.setIcon(icon);
+                        iconLabel.repaint();
+                    }
+                } catch (Exception ignore) {}
+            }
+        }.execute();
 
         // 文本区域 (中间)
         JPanel textPanel = new JPanel(new GridLayout(2, 1));

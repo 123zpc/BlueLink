@@ -4,6 +4,8 @@ import com.bluelink.util.MdCodeUtil;
 import com.bluelink.util.UiUtils;
 import com.formdev.flatlaf.extras.FlatSVGIcon;
 import net.miginfocom.swing.MigLayout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.swing.*;
 import java.awt.*;
@@ -16,6 +18,8 @@ import java.io.File;
  * 重构版：使用 MainChatPanel 和 AiChatPanel 组件
  */
 public class ModernQQFrame extends JFrame {
+
+    private static final Logger log = LoggerFactory.getLogger(ModernQQFrame.class);
 
     // CardLayout 页面管理
     private CardLayout cardLayout;
@@ -379,7 +383,7 @@ public class ModernQQFrame extends JFrame {
 
         @Override
         public void onAiRequest(String prompt, com.bluelink.net.BluetoothSession session) {
-            System.out.println("[UI] 收到 AI 请求: " + prompt);
+            log.debug("[UI] 收到 AI 请求: {}", prompt);
 
             if (aiService == null) {
                 try {
@@ -395,7 +399,7 @@ public class ModernQQFrame extends JFrame {
                                 try {
                                     session.sendAiResponse(chunk);
                                 } catch (Exception e) {
-                                    e.printStackTrace();
+                                    log.error("Failed to send AI response chunk", e);
                                 }
                             },
                             err -> {
@@ -478,7 +482,7 @@ public class ModernQQFrame extends JFrame {
     private void showSettingsDialog() {
         JDialog dialog = new JDialog(this, "设置", true);
         dialog.setUndecorated(true);
-        dialog.setSize(520, 480);
+        dialog.setSize(520, 550);
         dialog.setLocationRelativeTo(this);
         dialog.setBackground(new Color(0, 0, 0, 0));
 
@@ -491,6 +495,10 @@ public class ModernQQFrame extends JFrame {
 
         java.util.concurrent.atomic.AtomicBoolean tempAiEnabled = new java.util.concurrent.atomic.AtomicBoolean(
                 com.bluelink.util.AppConfig.isAiEnabled());
+        java.util.concurrent.atomic.AtomicBoolean tempAiMultiTurn = new java.util.concurrent.atomic.AtomicBoolean(
+                com.bluelink.util.AppConfig.isAiMultiTurnEnabled());
+        java.util.concurrent.atomic.AtomicInteger tempAiRetention = new java.util.concurrent.atomic.AtomicInteger(
+                com.bluelink.util.AppConfig.getAiHistoryRetentionDays());
         java.util.concurrent.atomic.AtomicReference<String> tempAiUrl = new java.util.concurrent.atomic.AtomicReference<>(
                 com.bluelink.util.AppConfig.getAiApiUrl());
         java.util.concurrent.atomic.AtomicReference<String> tempAiKey = new java.util.concurrent.atomic.AtomicReference<>(
@@ -513,6 +521,8 @@ public class ModernQQFrame extends JFrame {
                     || (tempTimeout.get() != com.bluelink.util.AppConfig.getConnectionTimeoutSeconds())
                     || (!tempPath.get().equals(com.bluelink.util.AppConfig.getDownloadPath()))
                     || (tempAiEnabled.get() != com.bluelink.util.AppConfig.isAiEnabled())
+                    || (tempAiMultiTurn.get() != com.bluelink.util.AppConfig.isAiMultiTurnEnabled())
+                    || (tempAiRetention.get() != com.bluelink.util.AppConfig.getAiHistoryRetentionDays())
                     || (!tempAiUrl.get().equals(com.bluelink.util.AppConfig.getAiApiUrl()))
                     || (!tempAiKey.get().equals(com.bluelink.util.AppConfig.getAiApiKey()))
                     || (!tempAiModel.get().equals(com.bluelink.util.AppConfig.getAiModel()));
@@ -531,14 +541,47 @@ public class ModernQQFrame extends JFrame {
         };
 
         saveBtn.addActionListener(e -> {
+            boolean wasMultiTurn = com.bluelink.util.AppConfig.isAiMultiTurnEnabled();
+            boolean isMultiTurn = tempAiMultiTurn.get();
+            
             this.enterToSend = tempEnterToSend.get();
             com.bluelink.util.AppConfig.setEnterToSend(this.enterToSend);
             com.bluelink.util.AppConfig.setConnectionTimeout(tempTimeout.get());
             com.bluelink.util.AppConfig.setDownloadPath(tempPath.get());
             com.bluelink.util.AppConfig.setAiEnabled(tempAiEnabled.get());
+            com.bluelink.util.AppConfig.setAiMultiTurnEnabled(isMultiTurn);
+            com.bluelink.util.AppConfig.setAiHistoryRetentionDays(tempAiRetention.get());
             com.bluelink.util.AppConfig.setAiApiUrl(tempAiUrl.get());
             com.bluelink.util.AppConfig.setAiApiKey(tempAiKey.get());
             com.bluelink.util.AppConfig.setAiModel(tempAiModel.get());
+            
+            // Handle Redis lifecycle with UI feedback
+            if (aiService != null) {
+                if (isMultiTurn && !wasMultiTurn) {
+                    // Starting Redis
+                    JDialog loading = new JDialog(dialog, "请稍候", true);
+                    loading.setUndecorated(true);
+                    JPanel p = new JPanel(new MigLayout("insets 20", "[center]", "[][center]"));
+                    p.setBorder(BorderFactory.createLineBorder(Color.LIGHT_GRAY));
+                    p.add(new JLabel("正在启动多轮对话引擎..."), "wrap");
+                    JProgressBar bar = new JProgressBar();
+                    bar.setIndeterminate(true);
+                    p.add(bar);
+                    loading.setContentPane(p);
+                    loading.pack();
+                    loading.setLocationRelativeTo(dialog);
+                    
+                    new Thread(() -> {
+                        aiService.startRedis();
+                        SwingUtilities.invokeLater(loading::dispose);
+                    }).start();
+                    
+                    loading.setVisible(true);
+                } else if (!isMultiTurn && wasMultiTurn) {
+                    // Stopping Redis
+                    new Thread(() -> aiService.stopRedis()).start();
+                }
+            }
             
             // Refresh sidebar to reflect AI toggle
             refreshSidebar();
@@ -546,12 +589,17 @@ public class ModernQQFrame extends JFrame {
                 switchContent(CARD_MAIN_CHAT);
             }
             
+            // 通知 AI 面板更新状态 (例如启用/禁用下拉框)
+            if (aiChatPanel != null) {
+                aiChatPanel.onMultiTurnToggled(isMultiTurn);
+            }
+            
             dialog.dispose();
         });
 
         // Use helper to keep main readable
         JPanel mainPanel = createSettingsContent(dialog, closeAction, saveBtn, tempEnterToSend, tempTimeout, tempPath,
-                tempAiEnabled, tempAiUrl, tempAiKey, tempAiModel, checkChanges);
+                tempAiEnabled, tempAiMultiTurn, tempAiRetention, tempAiUrl, tempAiKey, tempAiModel, checkChanges);
 
         dialog.setContentPane(mainPanel);
         dialog.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
@@ -568,6 +616,8 @@ public class ModernQQFrame extends JFrame {
             java.util.concurrent.atomic.AtomicInteger tempTimeout,
             java.util.concurrent.atomic.AtomicReference<String> tempPath,
             java.util.concurrent.atomic.AtomicBoolean tempAiEnabled,
+            java.util.concurrent.atomic.AtomicBoolean tempAiMultiTurn,
+            java.util.concurrent.atomic.AtomicInteger tempAiRetention,
             java.util.concurrent.atomic.AtomicReference<String> tempAiUrl,
             java.util.concurrent.atomic.AtomicReference<String> tempAiKey,
             java.util.concurrent.atomic.AtomicReference<String> tempAiModel,
@@ -748,6 +798,93 @@ public class ModernQQFrame extends JFrame {
         switchPanel.add(switchLabel);
         
         aiPanel.add(switchPanel, "wrap");
+        
+        JPanel multiTurnPanel = new JPanel(new MigLayout("insets 0", "[]10[]"));
+        multiTurnPanel.setOpaque(false);
+        
+        // Retention Days
+        JPanel retentionPanel = new JPanel(new MigLayout("insets 0", "[][grow]"));
+        retentionPanel.setOpaque(false);
+        retentionPanel.add(new JLabel("历史记录保留 (天):"));
+        // 使用 JFormattedTextField 限制只能输入数字
+        javax.swing.text.NumberFormatter numberFormatter = new javax.swing.text.NumberFormatter(java.text.NumberFormat.getIntegerInstance());
+        numberFormatter.setValueClass(Integer.class);
+        numberFormatter.setAllowsInvalid(true); // 允许暂时输入非法字符（如空），以便用户清空重输
+        numberFormatter.setMinimum(1); // 最小 1 天
+        numberFormatter.setMaximum(365); // 最大 365 天
+        
+        JFormattedTextField retentionF = new JFormattedTextField(numberFormatter);
+        retentionF.setValue(tempAiRetention.get());
+        retentionF.setColumns(5);
+        
+        // 关键修复：设置 FocusLostBehavior 为 PERSIST，允许用户暂时清空内容进行编辑
+        // 默认是 COMMIT_OR_REVERT，如果清空（非法值），焦点丢失时会回滚。
+        // 但如果在输入过程中（焦点未丢失）内容为空，getValue() 可能会抛异常或返回 null。
+        retentionF.setFocusLostBehavior(JFormattedTextField.PERSIST);
+        
+        retentionF.getDocument().addDocumentListener(getSimpleListener(() -> {
+            try {
+                // 如果内容为空，暂时不 commit，也不更新 tempAiRetention
+                if (retentionF.getText().trim().isEmpty()) {
+                    return;
+                }
+                
+                // 尝试 commit
+                retentionF.commitEdit();
+                Object val = retentionF.getValue();
+                if (val instanceof Number) {
+                    int days = ((Number) val).intValue();
+                    if (days != tempAiRetention.get()) {
+                        tempAiRetention.set(days);
+                        checkChanges.run();
+                    }
+                }
+            } catch (Exception e) {
+                // ignore invalid
+            }
+        }));
+        
+        // 同时也监听 PropertyChange
+        retentionF.addPropertyChangeListener("value", evt -> {
+             try {
+                Object val = retentionF.getValue();
+                if (val instanceof Number) {
+                    int days = ((Number) val).intValue();
+                    if (days != tempAiRetention.get()) {
+                        tempAiRetention.set(days);
+                        checkChanges.run();
+                    }
+                }
+            } catch (Exception e) {}
+        });
+        
+        retentionPanel.add(retentionF);
+        
+        // 初始可见性
+        retentionPanel.setVisible(tempAiMultiTurn.get());
+        aiPanel.add(retentionPanel, "wrap");
+        
+        SwitchButton multiTurnSwitch = new SwitchButton(tempAiMultiTurn.get());
+        multiTurnSwitch.addActionListener(e -> {
+            boolean selected = multiTurnSwitch.isSelected();
+            tempAiMultiTurn.set(selected);
+            retentionPanel.setVisible(selected);
+            
+            // 立即触发 Redis 启停逻辑 (如果需要)
+            // 注意：这只是为了演示，真正的启停应该在点击"保存设置"后触发
+            // 但用户要求 "为了用户体验可以有一个等待动画"
+            // 这意味着我们可能需要在点击保存时，如果检测到 multiTurn 从 false -> true，则显示动画
+            
+            checkChanges.run();
+        });
+
+        JLabel multiTurnLabel = new JLabel("启用多轮对话");
+        multiTurnLabel.setFont(UiUtils.FONT_NORMAL);
+        
+        multiTurnPanel.add(multiTurnSwitch);
+        multiTurnPanel.add(multiTurnLabel);
+        
+        aiPanel.add(multiTurnPanel, "wrap", 1);
 
         aiPanel.add(new JLabel("API URL:"));
         JTextField urlF = new JTextField(tempAiUrl.get());

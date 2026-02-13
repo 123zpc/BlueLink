@@ -138,7 +138,7 @@ public class AppConfig {
      * 默认为 DeepSeek 官方 API
      */
     public static String getAiApiUrl() {
-        return props.getProperty("ai.api.url", "https://api.deepseek.com/v1/chat/completions");
+        return props.getProperty("ai.api.url", "https://api.deepseek.com");
     }
 
     public static void setAiApiUrl(String url) {
@@ -177,5 +177,44 @@ public class AppConfig {
 
     public static void setAiEnabled(boolean enabled) {
         saveConfig("ai.enabled", String.valueOf(enabled));
+    }
+
+    /**
+     * 是否开启 AI 多轮对话
+     */
+    public static boolean isAiMultiTurnEnabled() {
+        return Boolean.parseBoolean(props.getProperty("ai.multi.turn", "true"));
+    }
+
+    public static void setAiMultiTurnEnabled(boolean enabled) {
+        saveConfig("ai.multi.turn", String.valueOf(enabled));
+    }
+
+    /**
+     * 获取 AI 历史记录保留天数
+     * 默认为 7 天
+     */
+    public static int getAiHistoryRetentionDays() {
+        try {
+            return Integer.parseInt(props.getProperty("ai.history.retention.days", "7"));
+        } catch (NumberFormatException e) {
+            return 7;
+        }
+    }
+
+    public static void setAiHistoryRetentionDays(int days) {
+        saveConfig("ai.history.retention.days", String.valueOf(days));
+    }
+
+    /**
+     * 是否开启内置 Redis
+     * 强制开启
+     */
+    public static boolean isEmbeddedRedisEnabled() {
+        return true;
+    }
+
+    public static void setEmbeddedRedisEnabled(boolean enabled) {
+        // No-op, forced enabled
     }
 }

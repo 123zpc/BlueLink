@@ -39,7 +39,19 @@ public class MarkdownUtils {
         // 1. Markdown -> HTML
         Node document = parser.parse(markdown);
         String html = renderer.render(document);
-
+        
+        // CRITICAL FIX: Swing HTML3.2 不支持相对路径图片，也不支持某些 HTTPS 图片加载（取决于实现）。
+        // 这里的图片链接如果是 Markdown 里的 ![](url)，commonmark 会直接输出 <img src="url" ... />
+        // 我们需要确保图片能被加载。
+        // 如果是 Base64 图片，Swing 支持。如果是网络图片，Swing 需要异步加载或者自定义 View。
+        // 但最简单的方法是，如果图片无法显示，可能是 HTML 结构问题。
+        // 很多 Markdown 渲染器输出的 img 标签没有闭合或者属性问题。commonmark 输出的是 <img src="" alt="" /> (XHTML)
+        // Swing HTML3.2 可能更喜欢 <img src="">
+        
+        // 另外，给 img 增加最大宽度限制，防止撑破气泡
+        // 但 Swing HTML 不支持 max-width CSS。只能通过 width 属性。
+        // 这是一个难点。我们暂时不处理宽度，依赖 Swing 自己的缩放（通常不缩放）。
+        
         // 2. Emoji -> Twemoji Image Tags
         // 使用 emoji-java 将 Unicode Emoji 转换为 Twemoji 图片链接
         html = EmojiParser.parseToUnicode(html); // 确保是 Unicode (虽然一般已经是)

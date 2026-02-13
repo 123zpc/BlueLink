@@ -162,6 +162,8 @@ public abstract class BaseChatPanel extends JPanel {
         wrapper.add(bubble, constraints);
 
         chatArea.add(wrapper, "growx, wrap");
+        chatArea.revalidate();
+        chatArea.repaint();
         scrollToBottom();
 
         return bubble;

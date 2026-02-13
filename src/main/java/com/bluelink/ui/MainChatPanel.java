@@ -1,10 +1,12 @@
 package com.bluelink.ui;
 
+import com.bluelink.ai.SpringAiService;
 import com.bluelink.net.BluetoothClient;
 import com.bluelink.db.TransferDao;
 import com.bluelink.net.BluetoothSession;
 import com.bluelink.ui.bubble.BubbleFactory;
 import com.bluelink.ui.bubble.BubblePanel;
+import com.bluelink.util.MarkdownUtils;
 import com.bluelink.util.UiUtils;
 import net.miginfocom.swing.MigLayout;
 
@@ -41,11 +43,16 @@ public class MainChatPanel extends BaseChatPanel {
     // 监听器引用，用于在首次加载后再添加
     private java.awt.event.AdjustmentListener scrollListener;
     private JPanel loadingPanel;
+    
+    private AtMentionManager atMentionManager;
+    private SpringAiService aiService;
 
     public MainChatPanel(ModernQQFrame parentFrame) {
         super();
         this.parentFrame = parentFrame;
         setHeaderTitle("未连接");
+        
+        this.atMentionManager = new AtMentionManager(inputArea);
 
         // 核心功能初始化
         setupInputExtensions(); // 粘贴、拖拽等
@@ -69,6 +76,20 @@ public class MainChatPanel extends BaseChatPanel {
     public void setClient(BluetoothClient client) {
         this.client = client;
     }
+    
+    public void setAiService(SpringAiService aiService) {
+        this.aiService = aiService;
+    }
+
+    @Override
+    protected void performSendAction() {
+        if (atMentionManager != null && atMentionManager.isPopupVisible()) {
+            if (atMentionManager.confirmSelection()) {
+                return;
+            }
+        }
+        super.performSendAction();
+    }
 
     @Override
     protected void onSend(String text) {
@@ -78,6 +99,13 @@ public class MainChatPanel extends BaseChatPanel {
             if (client != null)
                 client.connect(addr);
             clearInput();
+            return;
+        }
+        
+        String mentionedModel = AtMentionManager.extractModelMention(text);
+        if (mentionedModel != null) {
+            String prompt = AtMentionManager.stripMention(text);
+            handleAiMention(mentionedModel, prompt);
             return;
         }
 
@@ -157,6 +185,83 @@ public class MainChatPanel extends BaseChatPanel {
         } catch (Exception ex) {
             ex.printStackTrace();
         }
+    }
+
+    private void handleAiMention(String modelName, String prompt) {
+        if (prompt == null || prompt.isEmpty()) {
+            return;
+        }
+        String fullText = "@" + modelName + " " + prompt;
+        addTextBubble(true, fullText);
+        clearInput();
+        if (aiService == null) {
+            addSystemTip("AI 服务不可用");
+            return;
+        }
+        
+        BubblePanel aiBubble = BubbleFactory.createAiThinkingBubble(modelName);
+        
+        JPanel wrapper = new JPanel(new MigLayout("insets 2, fillx, gap 0", "[grow]", "[]"));
+        wrapper.setOpaque(false);
+        String constraints = "al left, width ::80%";
+        wrapper.add(aiBubble, constraints);
+        chatArea.add(wrapper, "growx, wrap");
+        scrollToBottom();
+        
+        StringBuilder responseBuilder = new StringBuilder();
+        javax.swing.text.JTextComponent aiTextArea = findTextComponent(aiBubble);
+        
+        String tempSessionId = java.util.UUID.randomUUID().toString();
+        aiService.streamChat(prompt, tempSessionId, modelName)
+                .subscribe(
+                        chunk -> {
+                            SwingUtilities.invokeLater(() -> {
+                                if (responseBuilder.length() == 0 && aiTextArea != null) {
+                                    aiTextArea.setText("");
+                                }
+                                responseBuilder.append(chunk);
+                                if (aiTextArea != null) {
+                                    if (aiTextArea instanceof JTextArea) {
+                                        ((JTextArea) aiTextArea).append(chunk);
+                                    } else {
+                                        aiTextArea.setText(responseBuilder.toString()); 
+                                    }
+                                    aiBubble.repaint();
+                                    chatArea.revalidate(); 
+                                    chatArea.repaint();
+                                }
+                            });
+                        },
+                        error -> {
+                            SwingUtilities.invokeLater(() -> {
+                                if (aiTextArea != null) {
+                                    aiTextArea.setText(aiTextArea.getText() + "\n[Error: " + error.getMessage() + "]");
+                                }
+                            });
+                        },
+                        () -> {
+                            SwingUtilities.invokeLater(() -> {
+                                if (aiTextArea instanceof JTextPane) {
+                                    String html = MarkdownUtils.markdownToHtml(responseBuilder.toString());
+                                    aiTextArea.setText(html);
+                                }
+                                scrollToBottom();
+                            });
+                        }
+                );
+    }
+    
+    private javax.swing.text.JTextComponent findTextComponent(Container container) {
+        for (Component c : container.getComponents()) {
+            if (c instanceof javax.swing.text.JTextComponent) {
+                return (javax.swing.text.JTextComponent) c;
+            }
+            if (c instanceof Container) {
+                javax.swing.text.JTextComponent found = findTextComponent((Container) c);
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     public void performFileSend(File file) {

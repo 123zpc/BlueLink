@@ -199,6 +199,9 @@ public class ModernQQFrame extends JFrame {
         if (aiChatPanel != null) {
             aiChatPanel.setAiService(aiService);
         }
+        if (mainChatPanel != null) {
+            mainChatPanel.setAiService(aiService);
+        }
     }
 
     public void loadHistory() {

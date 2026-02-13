@@ -81,6 +81,10 @@ public class SpringAiService {
     }
 
     public Flux<String> streamChat(String message, String conversationId) {
+        return streamChat(message, conversationId, null);
+    }
+
+    public Flux<String> streamChat(String message, String conversationId, String modelOverride) {
         String apiKey = AppConfig.getAiApiKey();
         String rawUrl = AppConfig.getAiApiUrl();
 
@@ -131,8 +135,11 @@ public class SpringAiService {
             ResponseErrorHandler errorHandler = new DefaultResponseErrorHandler();
             OpenAiApi api = new OpenAiApi(baseUrl, apiKey, chatPath, embPath, RestClient.builder(), WebClient.builder(), errorHandler);
             
-            // 使用配置的模型
-            String modelName = AppConfig.getAiModel();
+            // 使用配置的模型 (优先使用 override)
+            String modelName = modelOverride;
+            if (modelName == null || modelName.isEmpty()) {
+                modelName = AppConfig.getAiModel();
+            }
             if (modelName == null || modelName.isEmpty()) {
                 modelName = "deepseek-chat";
             }

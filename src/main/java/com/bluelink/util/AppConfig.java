@@ -183,7 +183,7 @@ public class AppConfig {
      * 是否开启 AI 多轮对话
      */
     public static boolean isAiMultiTurnEnabled() {
-        return Boolean.parseBoolean(props.getProperty("ai.multi.turn", "true"));
+        return Boolean.parseBoolean(props.getProperty("ai.multi.turn", "false"));
     }
 
     public static void setAiMultiTurnEnabled(boolean enabled) {

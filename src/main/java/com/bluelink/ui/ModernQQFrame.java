@@ -11,6 +11,9 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.geom.Ellipse2D;
 import java.io.File;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import reactor.core.Disposable;
 
 /**
  * 主窗口框架
@@ -48,6 +51,7 @@ public class ModernQQFrame extends JFrame {
     private com.bluelink.net.BluetoothServer server;
     private com.bluelink.net.BluetoothClient client;
     private com.bluelink.net.BluetoothSession currentSession;
+    private String currentConnectedDeviceName;
 
     public ModernQQFrame() {
         initUI();
@@ -159,6 +163,9 @@ public class ModernQQFrame extends JFrame {
 
         mainChatPanel = new MainChatPanel(this);
         mainChatPanel.setClient(client); // Initial client
+        if (currentConnectedDeviceName != null) {
+            mainChatPanel.setConnectedDeviceName(currentConnectedDeviceName);
+        }
 
         aiChatPanel = new AiChatPanel();
 
@@ -177,6 +184,9 @@ public class ModernQQFrame extends JFrame {
         cardLayout.show(cardPanel, PAGE_CHAT);
         // Default to Main Chat
         switchContent(CARD_MAIN_CHAT);
+        if (mainChatPanel != null) {
+            mainChatPanel.setConnectedDeviceName(currentConnectedDeviceName);
+        }
         // Load history if needed
         // SwingUtilities.invokeLater(() -> mainChatPanel.loadHistory()); // Removed duplicate call
         // mainChatPanel will handle its own initial load or via user interaction
@@ -376,8 +386,13 @@ public class ModernQQFrame extends JFrame {
     }
 
     private class TransferListenerImpl implements com.bluelink.net.TransferListener {
+        private final Map<com.bluelink.net.BluetoothSession, Disposable> aiSubscriptions = new ConcurrentHashMap<>();
+
         @Override
         public void onMessageReceived(String sender, String content) {
+            com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("TEXT", false, content, 0);
+            item.renderType = "TEXT";
+            com.bluelink.db.TransferDao.save(item);
             SwingUtilities.invokeLater(() -> {
                 mainChatPanel.addTextBubble(false, content);
                 trayManager.showNotification("收到新消息", content);
@@ -391,12 +406,18 @@ public class ModernQQFrame extends JFrame {
             if (aiService == null) {
                 try {
                     session.sendAiResponse("Error: Host AI 服务未就绪");
+                    session.sendAiDone();
                 } catch (Exception e) {
                 }
                 return;
             }
 
-            aiService.streamChat(prompt)
+            Disposable existing = aiSubscriptions.remove(session);
+            if (existing != null && !existing.isDisposed()) {
+                existing.dispose();
+            }
+
+            Disposable disposable = aiService.streamChat(prompt)
                     .subscribe(
                             chunk -> {
                                 try {
@@ -408,24 +429,58 @@ public class ModernQQFrame extends JFrame {
                             err -> {
                                 try {
                                     session.sendAiResponse("\n[Error: " + err.getMessage() + "]");
+                                    session.sendAiDone();
                                 } catch (Exception e) {
                                 }
+                                aiSubscriptions.remove(session);
                             },
                             () -> {
+                                try {
+                                    session.sendAiDone();
+                                } catch (Exception e) {
+                                }
+                                aiSubscriptions.remove(session);
                             });
+            aiSubscriptions.put(session, disposable);
         }
 
         @Override
         public void onAiResponse(String chunk) {
             SwingUtilities.invokeLater(() -> {
-                if (aiChatPanel != null) {
+                if (mainChatPanel != null && mainChatPanel.isRemoteAiResponding()) {
+                    mainChatPanel.onAiStreamChunk(chunk);
+                } else if (aiChatPanel != null) {
                     aiChatPanel.onAiStreamChunk(chunk);
                 }
             });
         }
 
         @Override
+        public void onAiDone() {
+            SwingUtilities.invokeLater(() -> {
+                if (mainChatPanel != null && mainChatPanel.isRemoteAiResponding()) {
+                    mainChatPanel.onAiStreamComplete();
+                }
+            });
+        }
+
+        @Override
+        public void onAiStop(com.bluelink.net.BluetoothSession session) {
+            Disposable disposable = aiSubscriptions.remove(session);
+            if (disposable != null && !disposable.isDisposed()) {
+                disposable.dispose();
+            }
+            try {
+                session.sendAiDone();
+            } catch (Exception e) {
+            }
+        }
+
+        @Override
         public void onFileReceived(String sender, File file, String originalName) {
+            com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("FILE", false,
+                    file.getAbsolutePath(), file.length());
+            com.bluelink.db.TransferDao.save(item);
             SwingUtilities.invokeLater(() -> {
                 mainChatPanel.onFileReceived(originalName, file);
                 trayManager.showNotification("收到文件", file.getName());
@@ -443,18 +498,27 @@ public class ModernQQFrame extends JFrame {
         public void onConnectionStatusChanged(boolean isConnected, String deviceName) {
             SwingUtilities.invokeLater(() -> {
                 if (isConnected) {
+                    currentConnectedDeviceName = deviceName;
                     showChatPage();
                     trayManager.showNotification("连接成功", "已与 " + deviceName + " 建立连接");
                     if (connectionPanel != null) {
                         connectionPanel.onIncomingConnection(deviceName);
+                    }
+                    if (mainChatPanel != null) {
+                        mainChatPanel.setConnectedDeviceName(deviceName);
                     }
                 } else {
                     if (client != null)
                         client.close();
                     if (currentSession != null)
                         currentSession = null;
+                    currentConnectedDeviceName = null;
                     if (mainChatPanel != null)
                         mainChatPanel.setSession(null);
+                    if (mainChatPanel != null)
+                        mainChatPanel.setConnectedDeviceName(null);
+                    if (connectionPanel != null)
+                        connectionPanel.resetState();
                 }
             });
         }
@@ -949,7 +1013,7 @@ public class ModernQQFrame extends JFrame {
         // Tab 5: About
         JPanel aboutPanel = new JPanel(new MigLayout("insets 10, fillx, wrap 1"));
         aboutPanel.setOpaque(false);
-        aboutPanel.add(new JLabel("<html><b>BlueLink</b> v1.0.0</html>"), "wrap");
+        aboutPanel.add(new JLabel("<html><b>BlueLink</b> v2.0.0-DEV</html>"), "wrap");
         aboutPanel.add(new JLabel("作者: ZPC"), "wrap");
         aboutPanel.add(new JLabel("Email: privacyporton@proton.me"), "wrap");
 
@@ -971,7 +1035,7 @@ public class ModernQQFrame extends JFrame {
         try {
             FlatSVGIcon iconSend = new FlatSVGIcon("com/bluelink/ui/icons/send.svg", 16, 16);
             FlatSVGIcon iconSettings = new FlatSVGIcon("com/bluelink/ui/icons/settings.svg", 16, 16);
-            FlatSVGIcon iconAi = new FlatSVGIcon("com/bluelink/ui/icons/settings.svg", 16, 16);
+            FlatSVGIcon iconAi = new FlatSVGIcon("com/bluelink/ui/icons/ai.svg", 16, 16);
             FlatSVGIcon iconConnect = new FlatSVGIcon("com/bluelink/ui/icons/connect.svg", 16, 16);
             FlatSVGIcon iconAbout = new FlatSVGIcon("com/bluelink/ui/icons/about.svg", 16, 16);
 

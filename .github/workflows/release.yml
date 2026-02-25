@@ -146,5 +146,7 @@ jobs:
           files: |
             release/*.exe
             release/*.msi
+          # 如果 tag 中包含 preview, beta, alpha 等字眼，自动标记为预发布版
+          prerelease: ${{ contains(github.ref, '-preview') || contains(github.ref, '-beta') || contains(github.ref, '-rc') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

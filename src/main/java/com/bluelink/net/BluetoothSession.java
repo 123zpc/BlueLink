@@ -49,7 +49,7 @@ public class BluetoothSession {
                             if (senderToken == localToken) {
                                 return;
                             }
-                            if (listener != null && !"MSG".equals(fileName)) {
+                            if (listener != null && !"MSG".equals(fileName) && !fileName.startsWith("AI_")) {
                                 listener.onTransferProgress(fileName, current, total, true);
                             }
                         });
@@ -80,6 +80,14 @@ public class BluetoothSession {
                     String chunk = new String(packet.data, "UTF-8");
                     if (listener != null) {
                         listener.onAiResponse(chunk);
+                    }
+                } else if ("AI_DONE".equals(packet.name)) {
+                    if (listener != null) {
+                        listener.onAiDone();
+                    }
+                } else if ("AI_STOP".equals(packet.name)) {
+                    if (listener != null) {
+                        listener.onAiStop(this);
                     }
                 } else {
                     // 保存文件到配置的下载目录
@@ -140,8 +148,8 @@ public class BluetoothSession {
     public void sendFile(File file, String taskKey) throws IOException {
         if (!running)
             throw new IOException("会话已关闭");
-        if (file.length() > 50 * 1024 * 1024) {
-            throw new IOException("文件过大(限制 50MB)");
+        if (file.length() > 200 * 1024 * 1024) {
+            throw new IOException("文件过大(限制 200MB)");
         }
 
         byte[] fileData = new byte[(int) file.length()];
@@ -199,6 +207,26 @@ public class BluetoothSession {
             throw new IOException("会话已关闭");
         // System.out.println("[Session] 发送 AI 响应片段: " + chunk.length());
         byte[] packet = ProtocolWriter.createPacket(localToken, "AI_RESP", chunk.getBytes("UTF-8"));
+        synchronized (sendLock) {
+            outputStream.write(packet);
+            outputStream.flush();
+        }
+    }
+
+    public void sendAiDone() throws IOException {
+        if (!running)
+            throw new IOException("会话已关闭");
+        byte[] packet = ProtocolWriter.createPacket(localToken, "AI_DONE", new byte[0]);
+        synchronized (sendLock) {
+            outputStream.write(packet);
+            outputStream.flush();
+        }
+    }
+
+    public void sendAiStop() throws IOException {
+        if (!running)
+            throw new IOException("会话已关闭");
+        byte[] packet = ProtocolWriter.createPacket(localToken, "AI_STOP", new byte[0]);
         synchronized (sendLock) {
             outputStream.write(packet);
             outputStream.flush();

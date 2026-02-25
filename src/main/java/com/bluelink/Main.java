@@ -11,6 +11,8 @@ import org.springframework.context.ConfigurableApplicationContext;
 
 import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 @SpringBootApplication(exclude = {org.springframework.ai.autoconfigure.openai.OpenAiAutoConfiguration.class})
 public class Main {
@@ -24,9 +26,6 @@ public class Main {
         // 启动监听 (在 Spring 启动前占用端口，防止并发启动竞争)
         SingleInstanceLock.startServer();
 
-        // 确保数据库初始化
-        com.bluelink.db.DatabaseManager.initDatabase();
-
         // 总是设置 Embedded Redis 相关属性，因为我们移除了 @ConditionalOnProperty
         // 但控制权交给了 EmbeddedRedisConfig
         if (true) {
@@ -38,12 +37,15 @@ public class Main {
         }
 
         System.setProperty("logging.level.com.bluelink", "DEBUG");
+        System.setProperty("spring.main.lazy-initialization", "true");
 
         // 启动 Spring Context
         SpringApplicationBuilder builder = new SpringApplicationBuilder(Main.class);
         builder.headless(false); // 允许 Swing
         builder.web(WebApplicationType.NONE); // 非 Web 应用
-        ConfigurableApplicationContext context = builder.run(args);
+
+        AtomicReference<ModernQQFrame> frameRef = new AtomicReference<>();
+        CountDownLatch frameReady = new CountDownLatch(1);
 
         SwingUtilities.invokeLater(() -> {
             UiUtils.initTheme();
@@ -52,15 +54,34 @@ public class Main {
             // 注册单实例锁的窗口引用
             SingleInstanceLock.registerFrame(frame);
             
-            // 注入 AI 服务
+            frame.setVisible(true);
+            frameRef.set(frame);
+            frameReady.countDown();
+        });
+
+        new Thread(() -> {
             try {
-                SpringAiService aiService = context.getBean(SpringAiService.class);
-                frame.setAiService(aiService);
-            } catch (Exception e) {
-                System.err.println("Warning: SpringAiService not found: " + e.getMessage());
+                frameReady.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
 
-            frame.setVisible(true);
-        });
+            try {
+                com.bluelink.db.DatabaseManager.initDatabase();
+            } catch (Throwable t) {
+                System.err.println("Database init failed: " + t.getMessage());
+            }
+
+            try {
+                ConfigurableApplicationContext context = builder.run(args);
+                SpringAiService aiService = context.getBean(SpringAiService.class);
+                ModernQQFrame frame = frameRef.get();
+                if (frame != null) {
+                    SwingUtilities.invokeLater(() -> frame.setAiService(aiService));
+                }
+            } catch (Exception e) {
+                System.err.println("Warning: SpringAiService not ready: " + e.getMessage());
+            }
+        }, "app-bootstrap").start();
     }
 }

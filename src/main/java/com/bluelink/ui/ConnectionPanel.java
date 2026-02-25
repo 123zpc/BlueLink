@@ -608,6 +608,56 @@ public class ConnectionPanel extends JPanel {
         });
     }
 
+    public void resetState() {
+        SwingUtilities.invokeLater(() -> {
+            isWaiting = false;
+            isScanning = false;
+
+            if (scanThread != null) {
+                scanThread.interrupt();
+                scanThread = null;
+            }
+
+            if (timeoutTimer != null) {
+                timeoutTimer.stop();
+                timeoutTimer = null;
+            }
+
+            waitBtn.setText("等待连接");
+            waitBtn.setForeground(UiUtils.COLOR_PRIMARY);
+            waitBtn.setBorder(BorderFactory.createLineBorder(new Color(220, 230, 240), 2));
+            for (java.awt.event.ActionListener l : waitBtn.getActionListeners()) {
+                waitBtn.removeActionListener(l);
+            }
+            waitBtn.addActionListener(e -> startWaiting());
+
+            connectBtn.setText("连接他人");
+            connectBtn.setForeground(UiUtils.COLOR_PRIMARY);
+            connectBtn.setBorder(BorderFactory.createLineBorder(new Color(220, 230, 240), 2));
+            for (java.awt.event.ActionListener l : connectBtn.getActionListeners()) {
+                connectBtn.removeActionListener(l);
+            }
+            connectBtn.addActionListener(e -> showConnectInput());
+
+            scanBtn.setText("扫描连接");
+            scanBtn.setEnabled(true);
+
+            connectBtn.setEnabled(true);
+            waitBtn.setEnabled(true);
+            codeInput.setEnabled(true);
+            codeInput.clear();
+
+            statusLabel.setText(" ");
+            statusLabel.setForeground(Color.GRAY);
+            for (java.awt.event.MouseListener l : statusLabel.getMouseListeners()) {
+                statusLabel.removeMouseListener(l);
+            }
+
+            revalidate();
+            repaint();
+        });
+    }
+
     /**
      * 设置是否从设置页面进入
      * 

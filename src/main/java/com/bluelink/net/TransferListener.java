@@ -70,4 +70,10 @@ public interface TransferListener {
      */
     default void onAiResponse(String chunk) {
     }
+
+    default void onAiDone() {
+    }
+
+    default void onAiStop(BluetoothSession session) {
+    }
 }

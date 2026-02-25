@@ -77,6 +77,11 @@ public class TrayManager {
         // TrayIcon 不使用 AWT PopupMenu，而是通过鼠标事件弹出 JPopupMenu
         trayIcon = new TrayIcon(image, "BlueLink");
         trayIcon.setImageAutoSize(true);
+        trayIcon.addActionListener(e -> {
+            frame.setVisible(true);
+            frame.setExtendedState(JFrame.NORMAL);
+            frame.toFront();
+        });
 
         trayIcon.addMouseListener(new MouseAdapter() {
             @Override

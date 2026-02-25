@@ -8,6 +8,8 @@ import net.miginfocom.swing.MigLayout;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.io.File;
 
 /**
@@ -22,6 +24,8 @@ public abstract class BaseChatPanel extends JPanel {
 
     protected JPanel chatArea;
     protected JScrollPane chatScrollPane;
+    protected JLayeredPane chatLayer;
+    protected JButton backToBottomButton;
 
     protected JPanel inputPanel;
     protected JTextArea inputArea;
@@ -57,7 +61,30 @@ public abstract class BaseChatPanel extends JPanel {
         chatScrollPane.getVerticalScrollBar().setUnitIncrement(16);
         chatScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
 
-        add(chatScrollPane, "cell 0 1");
+        backToBottomButton = new JButton("返回底部");
+        backToBottomButton.setFont(UiUtils.FONT_NORMAL.deriveFont(12f));
+        backToBottomButton.setBackground(Color.WHITE);
+        backToBottomButton.setForeground(UiUtils.COLOR_PRIMARY);
+        backToBottomButton.setBorder(BorderFactory.createLineBorder(new Color(220, 230, 240), 1));
+        backToBottomButton.setFocusPainted(false);
+        backToBottomButton.setVisible(false);
+        backToBottomButton.addActionListener(e -> scrollToBottom());
+
+        chatLayer = new JLayeredPane();
+        chatLayer.setLayout(null);
+        chatLayer.add(chatScrollPane, JLayeredPane.DEFAULT_LAYER);
+        chatLayer.add(backToBottomButton, JLayeredPane.PALETTE_LAYER);
+        chatLayer.addComponentListener(new ComponentAdapter() {
+            @Override
+            public void componentResized(ComponentEvent e) {
+                layoutChatLayer();
+            }
+        });
+
+        chatScrollPane.getVerticalScrollBar().addAdjustmentListener(e -> updateBackToBottomVisibility());
+
+        add(chatLayer, "cell 0 1");
+        updateBackToBottomVisibility();
 
         // 3. Input Area
         inputPanel = new JPanel(new MigLayout("insets 10, fill", "[grow][]", "[grow][]"));
@@ -94,6 +121,26 @@ public abstract class BaseChatPanel extends JPanel {
         inputPanel.add(btnPanel, "cell 1 1"); // Row 1 (Bottom Right)
 
         add(inputPanel, "cell 0 2");
+    }
+
+    private void layoutChatLayer() {
+        int w = chatLayer.getWidth();
+        int h = chatLayer.getHeight();
+        chatScrollPane.setBounds(0, 0, w, h);
+
+        Dimension btnSize = backToBottomButton.getPreferredSize();
+        int x = Math.max(0, w - btnSize.width - 16);
+        int y = Math.max(0, h - btnSize.height - 16);
+        backToBottomButton.setBounds(x, y, btnSize.width, btnSize.height);
+    }
+
+    private void updateBackToBottomVisibility() {
+        SwingUtilities.invokeLater(() -> {
+            JScrollBar vertical = chatScrollPane.getVerticalScrollBar();
+            int bottom = vertical.getMaximum() - vertical.getVisibleAmount();
+            boolean atBottom = vertical.getValue() >= bottom - 5;
+            backToBottomButton.setVisible(!atBottom);
+        });
     }
 
     private void initInputKeyBindings() {
@@ -206,6 +253,20 @@ public abstract class BaseChatPanel extends JPanel {
         wrapper.setOpaque(false);
 
         BubblePanel bubble = BubbleFactory.createFileBubble(isSender, file);
+
+        String constraints = isSender ? "al right, width ::80%" : "al left, width ::80%";
+        wrapper.add(bubble, constraints);
+
+        chatArea.add(wrapper, "growx, wrap", index);
+
+        return bubble;
+    }
+
+    public BubblePanel insertMarkdownBubbleAt(int index, boolean isSender, String htmlContent) {
+        JPanel wrapper = new JPanel(new MigLayout("insets 2, fillx, gap 0", "[grow]", "[]"));
+        wrapper.setOpaque(false);
+
+        BubblePanel bubble = BubbleFactory.createMarkdownBubble(isSender, htmlContent);
 
         String constraints = isSender ? "al right, width ::80%" : "al left, width ::80%";
         wrapper.add(bubble, constraints);

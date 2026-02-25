@@ -6,13 +6,22 @@ import com.bluelink.db.TransferDao;
 import com.bluelink.net.BluetoothSession;
 import com.bluelink.ui.bubble.BubbleFactory;
 import com.bluelink.ui.bubble.BubblePanel;
+import com.bluelink.util.AppConfig;
 import com.bluelink.util.MarkdownUtils;
 import com.bluelink.util.UiUtils;
 import net.miginfocom.swing.MigLayout;
+import reactor.core.Disposable;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.datatransfer.DataFlavor;
+import java.awt.datatransfer.UnsupportedFlavorException;
 import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -46,6 +55,16 @@ public class MainChatPanel extends BaseChatPanel {
     
     private AtMentionManager atMentionManager;
     private SpringAiService aiService;
+    private String connectedDeviceName;
+    private boolean isAiResponding = false;
+    private boolean isAiFromRemote = false;
+    private StringBuilder currentAiResponse = new StringBuilder();
+    private BubblePanel currentAiBubble;
+    private javax.swing.text.JTextComponent currentAiTextArea;
+    private long lastRenderTime = 0;
+    private static final long RENDER_INTERVAL = 200;
+    private Disposable currentAiSubscription;
+    private static final int AUTO_DOC_TEXT_LENGTH = 2000;
 
     public MainChatPanel(ModernQQFrame parentFrame) {
         super();
@@ -73,6 +92,18 @@ public class MainChatPanel extends BaseChatPanel {
         this.currentSession = session;
     }
 
+    public void setConnectedDeviceName(String deviceName) {
+        this.connectedDeviceName = deviceName;
+        if (deviceName == null || deviceName.isEmpty()) {
+            setHeaderTitle("未连接");
+        } else {
+            setHeaderTitle(deviceName);
+        }
+        if (atMentionManager != null) {
+            atMentionManager.setConnectedDeviceName(deviceName);
+        }
+    }
+
     public void setClient(BluetoothClient client) {
         this.client = client;
     }
@@ -83,6 +114,10 @@ public class MainChatPanel extends BaseChatPanel {
 
     @Override
     protected void performSendAction() {
+        if (isAiResponding) {
+            stopGeneration();
+            return;
+        }
         if (atMentionManager != null && atMentionManager.isPopupVisible()) {
             if (atMentionManager.confirmSelection()) {
                 return;
@@ -102,16 +137,34 @@ public class MainChatPanel extends BaseChatPanel {
             return;
         }
         
-        String mentionedModel = AtMentionManager.extractModelMention(text);
-        if (mentionedModel != null) {
+        String mention = AtMentionManager.extractRawMention(text);
+        if (mention != null) {
             String prompt = AtMentionManager.stripMention(text);
-            handleAiMention(mentionedModel, prompt);
-            return;
+            if (connectedDeviceName != null && connectedDeviceName.equals(mention)) {
+                handleRemoteAiMention(mention, prompt);
+                return;
+            }
+            if (AtMentionManager.isConfiguredModelName(mention)) {
+                handleAiMention(mention, prompt);
+                return;
+            }
+        }
+
+        if (text.length() >= AUTO_DOC_TEXT_LENGTH) {
+            try {
+                File doc = createTextDocument(text);
+                clearInput();
+                performFileSend(doc);
+                return;
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         }
 
         // 1. Save DB
         TransferDao.LogItem item = new TransferDao.LogItem("TEXT", true, text, 0);
         item.status = "SENDING";
+        item.renderType = "TEXT";
         TransferDao.save(item);
 
         // 2. UI Render
@@ -143,6 +196,26 @@ public class MainChatPanel extends BaseChatPanel {
         }).start();
     }
 
+    private File createTextDocument(String text) throws IOException {
+        String baseDir = AppConfig.getDownloadPath();
+        File dir = new File(baseDir, "BlueLink-文本");
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+
+        String time = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+        String baseName = "文本_" + time + ".txt";
+        File file = new File(dir, baseName);
+        int index = 1;
+        while (file.exists()) {
+            file = new File(dir, "文本_" + time + "_" + index + ".txt");
+            index++;
+        }
+
+        Files.write(file.toPath(), text.getBytes(StandardCharsets.UTF_8));
+        return file;
+    }
+
     // --- File & Paste Logic ---
 
     private void setupInputExtensions() {
@@ -163,26 +236,37 @@ public class MainChatPanel extends BaseChatPanel {
                 return;
 
             // 1. Files
-            if (t.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
-                @SuppressWarnings("unchecked")
-                java.util.List<File> files = (java.util.List<File>) t
-                        .getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor);
-                for (File file : files)
-                    performFileSend(file);
-                return;
+            try {
+                Object data = t.getTransferData(DataFlavor.javaFileListFlavor);
+                if (data instanceof java.util.List) {
+                    @SuppressWarnings("unchecked")
+                    java.util.List<File> files = (java.util.List<File>) data;
+                    for (File file : files) {
+                        performFileSend(file);
+                    }
+                    return;
+                }
+            } catch (UnsupportedFlavorException ignored) {
             }
 
             // 2. Images (Placeholder / Simplified)
-            if (t.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.imageFlavor)) {
-                // If we want to support image paste, we can add it here.
-                return;
+            try {
+                Object image = t.getTransferData(DataFlavor.imageFlavor);
+                if (image != null) {
+                    return;
+                }
+            } catch (UnsupportedFlavorException ignored) {
             }
 
             // 3. Text
-            if (t.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.stringFlavor)) {
-                inputArea.paste(); // Default
+            try {
+                Object text = t.getTransferData(DataFlavor.stringFlavor);
+                if (text != null) {
+                    inputArea.paste();
+                }
+            } catch (UnsupportedFlavorException ignored) {
             }
-        } catch (Exception ex) {
+        } catch (IOException ex) {
             ex.printStackTrace();
         }
     }
@@ -198,57 +282,173 @@ public class MainChatPanel extends BaseChatPanel {
             addSystemTip("AI 服务不可用");
             return;
         }
-        
-        BubblePanel aiBubble = BubbleFactory.createAiThinkingBubble(modelName);
-        
+
+        startAiStream(modelName, false);
+        String tempSessionId = java.util.UUID.randomUUID().toString();
+        currentAiSubscription = aiService.streamChat(prompt, tempSessionId, modelName)
+                .subscribe(
+                        chunk -> SwingUtilities.invokeLater(() -> appendAiChunk(chunk)),
+                        error -> SwingUtilities.invokeLater(() -> {
+                            appendAiChunk("\n[Error: " + error.getMessage() + "]");
+                            onAiComplete();
+                        }),
+                        () -> SwingUtilities.invokeLater(this::onAiComplete)
+                );
+    }
+
+    private void handleRemoteAiMention(String deviceName, String prompt) {
+        if (prompt == null || prompt.isEmpty()) {
+            return;
+        }
+        String fullText = "@" + deviceName + " " + prompt;
+        addTextBubble(true, fullText);
+        clearInput();
+        if (currentSession == null) {
+            addSystemTip("未连接，无法调用对方 AI");
+            return;
+        }
+
+        startAiStream(deviceName, true);
+        new Thread(() -> {
+            try {
+                currentSession.sendAiRequest(prompt);
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    addSystemTip("AI 请求失败: " + e.getMessage());
+                    onAiComplete();
+                });
+            }
+        }).start();
+    }
+
+    private void startAiStream(String label, boolean fromRemote) {
+        isAiResponding = true;
+        isAiFromRemote = fromRemote;
+        sendButton.setText("停止");
+        sendButton.setBackground(new Color(220, 53, 69));
+        currentAiResponse.setLength(0);
+        lastRenderTime = 0;
+
+        currentAiBubble = BubbleFactory.createAiThinkingBubble(label);
         JPanel wrapper = new JPanel(new MigLayout("insets 2, fillx, gap 0", "[grow]", "[]"));
         wrapper.setOpaque(false);
         String constraints = "al left, width ::80%";
-        wrapper.add(aiBubble, constraints);
+        wrapper.add(currentAiBubble, constraints);
         chatArea.add(wrapper, "growx, wrap");
+        chatArea.revalidate();
+        chatArea.repaint();
         scrollToBottom();
-        
-        StringBuilder responseBuilder = new StringBuilder();
-        javax.swing.text.JTextComponent aiTextArea = findTextComponent(aiBubble);
-        
-        String tempSessionId = java.util.UUID.randomUUID().toString();
-        aiService.streamChat(prompt, tempSessionId, modelName)
-                .subscribe(
-                        chunk -> {
-                            SwingUtilities.invokeLater(() -> {
-                                if (responseBuilder.length() == 0 && aiTextArea != null) {
-                                    aiTextArea.setText("");
-                                }
-                                responseBuilder.append(chunk);
-                                if (aiTextArea != null) {
-                                    if (aiTextArea instanceof JTextArea) {
-                                        ((JTextArea) aiTextArea).append(chunk);
-                                    } else {
-                                        aiTextArea.setText(responseBuilder.toString()); 
-                                    }
-                                    aiBubble.repaint();
-                                    chatArea.revalidate(); 
-                                    chatArea.repaint();
-                                }
-                            });
-                        },
-                        error -> {
-                            SwingUtilities.invokeLater(() -> {
-                                if (aiTextArea != null) {
-                                    aiTextArea.setText(aiTextArea.getText() + "\n[Error: " + error.getMessage() + "]");
-                                }
-                            });
-                        },
-                        () -> {
-                            SwingUtilities.invokeLater(() -> {
-                                if (aiTextArea instanceof JTextPane) {
-                                    String html = MarkdownUtils.markdownToHtml(responseBuilder.toString());
-                                    aiTextArea.setText(html);
-                                }
-                                scrollToBottom();
-                            });
-                        }
-                );
+
+        currentAiTextArea = findTextComponent(currentAiBubble);
+    }
+
+    private void stopGeneration() {
+        if (isAiFromRemote) {
+            if (currentSession != null) {
+                try {
+                    currentSession.sendAiStop();
+                } catch (Exception e) {
+                    addSystemTip("暂停失败: " + e.getMessage());
+                }
+            }
+        } else {
+            if (currentAiSubscription != null && !currentAiSubscription.isDisposed()) {
+                currentAiSubscription.dispose();
+            }
+        }
+        appendAiChunk("\n\n[用户终止输出]");
+        onAiComplete();
+    }
+
+    public boolean isRemoteAiResponding() {
+        return isAiResponding && isAiFromRemote;
+    }
+
+    public void onAiStreamChunk(String chunk) {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() -> onAiStreamChunk(chunk));
+            return;
+        }
+        if (!isAiResponding) {
+            startAiStream("AI", true);
+        }
+        appendAiChunk(chunk);
+    }
+
+    public void onAiStreamComplete() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::onAiStreamComplete);
+            return;
+        }
+        if (isAiFromRemote) {
+            onAiComplete();
+        }
+    }
+
+    private void appendAiChunk(String chunk) {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() -> appendAiChunk(chunk));
+            return;
+        }
+        if (!isAiResponding) return;
+        if (currentAiResponse.length() == 0 && (chunk == null || chunk.isEmpty())) {
+            return;
+        }
+
+        boolean isFirstChunk = false;
+        if (currentAiResponse.length() == 0 && currentAiTextArea != null) {
+            currentAiTextArea.setText("");
+            isFirstChunk = true;
+        }
+
+        currentAiResponse.append(chunk);
+
+        if (currentAiTextArea != null) {
+            long now = System.currentTimeMillis();
+            boolean isHtmlMode = (currentAiTextArea instanceof JTextPane);
+            if (isHtmlMode) {
+                if (isFirstChunk || (now - lastRenderTime > RENDER_INTERVAL)) {
+                    String html = MarkdownUtils.markdownToHtml(currentAiResponse.toString());
+                    currentAiTextArea.setText(html);
+                    currentAiTextArea.setCaretPosition(currentAiTextArea.getDocument().getLength());
+                    lastRenderTime = now;
+                }
+            } else if (currentAiTextArea instanceof JTextArea) {
+                ((JTextArea) currentAiTextArea).append(chunk);
+            }
+
+            currentAiBubble.repaint();
+            chatArea.revalidate();
+            chatArea.repaint();
+            scrollToBottom();
+        }
+    }
+
+    private void onAiComplete() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::onAiComplete);
+            return;
+        }
+        sendButton.setText("发送");
+        sendButton.setBackground(UiUtils.COLOR_PRIMARY);
+
+        if (isAiResponding && currentAiTextArea != null && currentAiResponse.length() > 0) {
+            if (currentAiTextArea instanceof JTextPane) {
+                String html = MarkdownUtils.markdownToHtml(currentAiResponse.toString());
+                currentAiTextArea.setText(html);
+                currentAiTextArea.setCaretPosition(currentAiTextArea.getDocument().getLength());
+            }
+            TransferDao.LogItem item = new TransferDao.LogItem("TEXT", false, currentAiResponse.toString(), 0);
+            item.renderType = "MARKDOWN";
+            TransferDao.save(item);
+        }
+
+        isAiResponding = false;
+        isAiFromRemote = false;
+        currentAiBubble = null;
+        currentAiTextArea = null;
+        currentAiSubscription = null;
+        scrollToBottom();
     }
     
     private javax.swing.text.JTextComponent findTextComponent(Container container) {
@@ -465,7 +665,12 @@ public class MainChatPanel extends BaseChatPanel {
         for (int i = list.size() - 1; i >= 0; i--) {
             TransferDao.LogItem item = list.get(i);
             if ("TEXT".equals(item.type)) {
-                insertTextBubbleAt(0, item.isSender, item.content);
+                if ("MARKDOWN".equalsIgnoreCase(item.renderType)) {
+                    String html = MarkdownUtils.markdownToHtml(item.content);
+                    insertMarkdownBubbleAt(0, item.isSender, html);
+                } else {
+                    insertTextBubbleAt(0, item.isSender, item.content);
+                }
             } else {
                 insertFileBubbleAt(0, item.isSender, new File(item.content));
             }

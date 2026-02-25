@@ -284,7 +284,7 @@ public class MainChatPanel extends BaseChatPanel {
         }
 
         startAiStream(modelName, false);
-        String tempSessionId = java.util.UUID.randomUUID().toString();
+        String tempSessionId = "mainchat:" + java.util.UUID.randomUUID().toString();
         currentAiSubscription = aiService.streamChat(prompt, tempSessionId, modelName)
                 .subscribe(
                         chunk -> SwingUtilities.invokeLater(() -> appendAiChunk(chunk)),

@@ -5,6 +5,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.InMemoryChatMemory;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -329,6 +330,66 @@ public class SpringAiService {
         // but maybe we should if it's critical. For now, assume cache is populated or we accept miss)
         
         return null;
+    }
+    
+    public void recordConversationTitle(String conversationId, String message) {
+        trackConversation(conversationId, message);
+    }
+    
+    public void appendLocalUserMessage(String conversationId, String message) {
+        if (conversationId == null || message == null) {
+            return;
+        }
+        localChatHistory.computeIfAbsent(conversationId, k -> new java.util.ArrayList<>())
+                .add(new UserMessage(message));
+    }
+    
+    public void appendLocalAssistantMessage(String conversationId, String message) {
+        if (conversationId == null || message == null || message.isEmpty()) {
+            return;
+        }
+        localChatHistory.computeIfAbsent(conversationId, k -> new java.util.ArrayList<>())
+                .add(new AssistantMessage(message));
+    }
+    
+    public String buildRemotePrompt(String conversationId, String message) {
+        boolean isMultiTurn = AppConfig.isAiMultiTurnEnabled();
+        if (!isMultiTurn || conversationId == null) {
+            return message;
+        }
+        List<Message> history = localChatHistory.get(conversationId);
+        if (history == null || history.isEmpty()) {
+            return message;
+        }
+        List<Message> promptMessages = new java.util.ArrayList<>(history);
+        promptMessages.add(new UserMessage(message));
+        return renderPromptText(promptMessages);
+    }
+    
+    private String renderPromptText(List<Message> messages) {
+        StringBuilder builder = new StringBuilder();
+        for (Message m : messages) {
+            if (m == null) {
+                continue;
+            }
+            String text = m.getText();
+            if (text == null || text.isEmpty()) {
+                continue;
+            }
+            String type = m.getMessageType() != null ? m.getMessageType().getValue() : "message";
+            String label;
+            if ("user".equalsIgnoreCase(type)) {
+                label = "User";
+            } else if ("assistant".equalsIgnoreCase(type)) {
+                label = "Assistant";
+            } else if ("system".equalsIgnoreCase(type)) {
+                label = "System";
+            } else {
+                label = "Message";
+            }
+            builder.append(label).append(": ").append(text).append("\n");
+        }
+        return builder.toString().trim();
     }
 
     private void loadConversationsFromRedis() {

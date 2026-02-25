@@ -13,7 +13,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.swing.*;
 import java.awt.*;
-import java.util.Map; // Add import
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -29,6 +29,7 @@ public class AiChatPanel extends BaseChatPanel {
 
     // AI 状态
     private boolean isAiResponding = false;
+    private boolean isAiFromRemote = false;
     private StringBuilder currentAiResponse = new StringBuilder();
     private BubblePanel currentAiBubble;
     // 使用 JTextComponent 以兼容 JTextArea (普通文本) 和 JTextPane (HTML)
@@ -42,9 +43,13 @@ public class AiChatPanel extends BaseChatPanel {
     private volatile String currentSessionId;
     private Disposable currentSubscription;
     private JComboBox<ConversationItem> sessionSelector;
+    private String connectedDeviceName;
+    private AtMentionManager atMentionManager;
+    private boolean forceNewSession = false;
 
     public AiChatPanel() {
         super();
+        this.atMentionManager = new AtMentionManager(inputArea);
         // Replace header title with combo box
         headerPanel.remove(headerLabel);
         
@@ -127,6 +132,9 @@ public class AiChatPanel extends BaseChatPanel {
         */
         
         this.currentSessionId = sessionId;
+        if (sessionId == null) {
+            forceNewSession = true;
+        }
         
         // Clear UI
         chatArea.removeAll();
@@ -186,6 +194,13 @@ public class AiChatPanel extends BaseChatPanel {
 
     public void setSession(BluetoothSession session) {
         this.session = session;
+    }
+    
+    public void setConnectedDeviceName(String deviceName) {
+        this.connectedDeviceName = deviceName;
+        if (atMentionManager != null) {
+            atMentionManager.setConnectedDeviceName(deviceName);
+        }
     }
 
     public void setAiService(SpringAiService aiService) {
@@ -251,7 +266,11 @@ public class AiChatPanel extends BaseChatPanel {
         if (aiService != null) {
             java.util.Map<String, String> conversations = aiService.getConversations();
             for (java.util.Map.Entry<String, String> entry : conversations.entrySet()) {
-                sessionSelector.addItem(new ConversationItem(entry.getKey(), entry.getValue()));
+                String id = entry.getKey();
+                if (id != null && id.startsWith("mainchat:")) {
+                    continue;
+                }
+                sessionSelector.addItem(new ConversationItem(id, entry.getValue()));
             }
         }
         
@@ -319,26 +338,58 @@ public class AiChatPanel extends BaseChatPanel {
     protected void performSendAction() {
         if (isAiResponding) {
             stopGeneration();
+            return;
+        }
+        if (atMentionManager != null && atMentionManager.isPopupVisible()) {
+            if (atMentionManager.confirmSelection()) {
+                return;
+            }
         } else {
             super.performSendAction();
         }
     }
 
     private void stopGeneration() {
-        if (currentSubscription != null && !currentSubscription.isDisposed()) {
-            currentSubscription.dispose();
-            log.info("AI generation stopped by user.");
-            // Append a marker to indicate stoppage
-            appendAiChunk("\n\n[用户终止输出]");
-            onAiComplete();
+        if (isAiFromRemote) {
+            if (session != null) {
+                try {
+                    session.sendAiStop();
+                } catch (Exception e) {
+                    addTextBubble(false, "暂停失败: " + e.getMessage());
+                }
+            }
+        } else {
+            if (currentSubscription != null && !currentSubscription.isDisposed()) {
+                currentSubscription.dispose();
+                log.info("AI generation stopped by user.");
+            }
         }
+        appendAiChunk("\n\n[用户终止输出]");
+        onAiComplete();
     }
 
     @Override
     protected void onSend(String text) {
+        String mention = AtMentionManager.extractRawMention(text);
+        boolean isRemoteMention = mention != null && connectedDeviceName != null && connectedDeviceName.equals(mention);
+        String remotePrompt = null;
+        if (isRemoteMention) {
+            remotePrompt = AtMentionManager.stripMention(text);
+            if (remotePrompt == null || remotePrompt.isEmpty()) {
+                addTextBubble(true, text);
+                clearInput();
+                return;
+            }
+        }
+        
         // 1. 显示用户已发送
         addTextBubble(true, text);
         clearInput();
+        
+        if (isRemoteMention) {
+            handleRemoteAiRequest(remotePrompt);
+            return;
+        }
 
         // 2. 发送请求 (优先使用 Spring AI)
         if (aiService != null) {
@@ -357,8 +408,9 @@ public class AiChatPanel extends BaseChatPanel {
                 
                 // Logic: If currentSessionId is set (from dropdown), use it.
                 // If it is null (New Chat), generate one AND update the dropdown to reflect it.
-                if (this.currentSessionId == null) {
+                if (this.currentSessionId == null || forceNewSession) {
                      this.currentSessionId = UUID.randomUUID().toString();
+                     forceNewSession = false;
                      // CRITICAL FIX: 立即更新下拉框选中状态，防止后续 refreshConversations 找不到选中项
                      // 虽然此时下拉框里还没有这个 ID，但我们可以利用 selectedId 变量在 refresh 时优先匹配
                 }
@@ -366,7 +418,7 @@ public class AiChatPanel extends BaseChatPanel {
                 
                 log.debug("DEBUG: [AI Start] Sending request... SessionId={} (Multi-turn: {})", sessionId, com.bluelink.util.AppConfig.isAiMultiTurnEnabled());
 
-                appendAiMessageStart();
+                appendAiMessageStart(currentSessionId, false);
                 
                 // 这里的 streamChat 需要适配 SpringAiService 的新接口 (带 sessionId)
                 currentSubscription = aiService.streamChat(text, sessionId)
@@ -403,6 +455,41 @@ public class AiChatPanel extends BaseChatPanel {
         }
     }
     
+    private void handleRemoteAiRequest(String prompt) {
+        if (session == null) {
+            addTextBubble(false, "未连接，无法调用对方 AI");
+            return;
+        }
+        
+        if (this.currentSessionId == null || forceNewSession) {
+            this.currentSessionId = UUID.randomUUID().toString();
+            forceNewSession = false;
+        }
+        
+        String label = connectedDeviceName != null ? connectedDeviceName : "AI";
+        appendAiMessageStart(label, true);
+        
+        final String promptToSend;
+        if (aiService != null) {
+            aiService.recordConversationTitle(currentSessionId, prompt);
+            promptToSend = aiService.buildRemotePrompt(currentSessionId, prompt);
+            aiService.appendLocalUserMessage(currentSessionId, prompt);
+        } else {
+            promptToSend = prompt;
+        }
+        
+        new Thread(() -> {
+            try {
+                session.sendAiRequest(promptToSend);
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    addTextBubble(false, "AI 请求失败: " + e.getMessage());
+                    onAiComplete();
+                });
+            }
+        }).start();
+    }
+    
     private static class ConversationItem {
         String id;
         String title;
@@ -419,19 +506,24 @@ public class AiChatPanel extends BaseChatPanel {
     }
 
     public void appendAiMessageStart() {
+        appendAiMessageStart(currentSessionId, false);
+    }
+    
+    public void appendAiMessageStart(String label, boolean fromRemote) {
         if (SwingUtilities.isEventDispatchThread()) {
-            appendAiMessageStartInternal();
+            appendAiMessageStartInternal(label, fromRemote);
         } else {
-            SwingUtilities.invokeLater(this::appendAiMessageStartInternal);
+            SwingUtilities.invokeLater(() -> appendAiMessageStartInternal(label, fromRemote));
         }
     }
 
     // 记录上一次的高度，用于优化 revalidate
     private int lastBubbleHeight = -1;
 
-    private void appendAiMessageStartInternal() {
+    private void appendAiMessageStartInternal(String label, boolean fromRemote) {
         // 这里的逻辑修改为：总是开始新的，如果旧的没结束，onSend 已经处理了
         isAiResponding = true;
+        isAiFromRemote = fromRemote;
         
         // Update Send Button to Stop Button
         sendButton.setText("停止");
@@ -442,7 +534,8 @@ public class AiChatPanel extends BaseChatPanel {
         lastRenderTime = 0;
 
         // 创建初始空气泡 "Thinking..."
-        currentAiBubble = BubbleFactory.createAiThinkingBubble(currentSessionId);
+        String bubbleLabel = (label == null || label.isEmpty()) ? "AI" : label;
+        currentAiBubble = BubbleFactory.createAiThinkingBubble(bubbleLabel);
         
         // 添加到界面 (使用 addBubble 逻辑)
         // addTextBubble 封装了 wrapper 创建，这里我们需要手动添加或者修改 addTextBubble
@@ -489,8 +582,6 @@ public class AiChatPanel extends BaseChatPanel {
             return;
         }
         
-        // 移除 isAiResponding 检查和自动开始，因为现在完全由 onSend 控制
-        // 如果当前没有响应状态（例如已被重置），则丢弃 chunk
         if (!isAiResponding) return;
 
         // CRITICAL FIX: 如果是第一个 chunk，且内容为空，则忽略
@@ -598,9 +689,16 @@ public class AiChatPanel extends BaseChatPanel {
              }
         }
 
+        if (isAiFromRemote && aiService != null && currentSessionId != null && currentAiResponse.length() > 0) {
+            aiService.appendLocalAssistantMessage(currentSessionId, currentAiResponse.toString());
+            SwingUtilities.invokeLater(this::refreshConversations);
+        }
+        
         isAiResponding = false;
+        isAiFromRemote = false;
         currentAiBubble = null;
         currentAiTextArea = null;
+        currentSubscription = null;
         
         // 最后滚动到底部
         scrollToBottom();
@@ -656,6 +754,28 @@ public class AiChatPanel extends BaseChatPanel {
 
     // 兼容接口
     public void onAiStreamChunk(String chunk) {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() -> onAiStreamChunk(chunk));
+            return;
+        }
+        if (!isAiResponding) {
+            String label = connectedDeviceName != null ? connectedDeviceName : "AI";
+            appendAiMessageStart(label, true);
+        }
         appendAiChunk(chunk);
+    }
+    
+    public void onAiStreamComplete() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::onAiStreamComplete);
+            return;
+        }
+        if (isAiFromRemote) {
+            onAiComplete();
+        }
+    }
+    
+    public boolean isRemoteAiResponding() {
+        return isAiResponding && isAiFromRemote;
     }
 }

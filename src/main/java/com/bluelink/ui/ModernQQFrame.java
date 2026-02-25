@@ -460,6 +460,8 @@ public class ModernQQFrame extends JFrame {
             SwingUtilities.invokeLater(() -> {
                 if (mainChatPanel != null && mainChatPanel.isRemoteAiResponding()) {
                     mainChatPanel.onAiStreamComplete();
+                } else if (aiChatPanel != null && aiChatPanel.isRemoteAiResponding()) {
+                    aiChatPanel.onAiStreamComplete();
                 }
             });
         }
@@ -507,6 +509,9 @@ public class ModernQQFrame extends JFrame {
                     if (mainChatPanel != null) {
                         mainChatPanel.setConnectedDeviceName(deviceName);
                     }
+                    if (aiChatPanel != null) {
+                        aiChatPanel.setConnectedDeviceName(deviceName);
+                    }
                 } else {
                     if (client != null)
                         client.close();
@@ -515,8 +520,12 @@ public class ModernQQFrame extends JFrame {
                     currentConnectedDeviceName = null;
                     if (mainChatPanel != null)
                         mainChatPanel.setSession(null);
+                    if (aiChatPanel != null)
+                        aiChatPanel.setSession(null);
                     if (mainChatPanel != null)
                         mainChatPanel.setConnectedDeviceName(null);
+                    if (aiChatPanel != null)
+                        aiChatPanel.setConnectedDeviceName(null);
                     if (connectionPanel != null)
                         connectionPanel.resetState();
                 }

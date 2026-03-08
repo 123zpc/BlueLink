@@ -61,12 +61,44 @@ public abstract class BaseChatPanel extends JPanel {
         chatScrollPane.getVerticalScrollBar().setUnitIncrement(16);
         chatScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
 
-        backToBottomButton = new JButton("返回底部");
+        backToBottomButton = new JButton("返回底部") {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(getBackground());
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), getHeight(), getHeight());
+                super.paintComponent(g);
+                g2.dispose();
+            }
+
+            @Override
+            protected void paintBorder(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(new Color(200, 200, 200, 100)); // 浅浅的半透明边框，模拟微弱深度
+                g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, getHeight() - 1, getHeight() - 1);
+                g2.dispose();
+            }
+        };
         backToBottomButton.setFont(UiUtils.FONT_NORMAL.deriveFont(12f));
-        backToBottomButton.setBackground(Color.WHITE);
+        backToBottomButton.setBackground(new Color(250, 252, 255, 230)); // 略带主色调的白
         backToBottomButton.setForeground(UiUtils.COLOR_PRIMARY);
-        backToBottomButton.setBorder(BorderFactory.createLineBorder(new Color(220, 230, 240), 1));
+        backToBottomButton.setContentAreaFilled(false);
+        backToBottomButton.setBorder(BorderFactory.createEmptyBorder(6, 16, 6, 16));
         backToBottomButton.setFocusPainted(false);
+        backToBottomButton.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        backToBottomButton.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseEntered(java.awt.event.MouseEvent e) {
+                backToBottomButton.setBackground(new Color(235, 245, 255, 240));
+            }
+
+            @Override
+            public void mouseExited(java.awt.event.MouseEvent e) {
+                backToBottomButton.setBackground(new Color(250, 252, 255, 230));
+            }
+        });
         backToBottomButton.setVisible(false);
         backToBottomButton.addActionListener(e -> scrollToBottom());
 

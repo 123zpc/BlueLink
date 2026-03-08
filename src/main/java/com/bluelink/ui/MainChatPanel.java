@@ -52,7 +52,7 @@ public class MainChatPanel extends BaseChatPanel {
     // 监听器引用，用于在首次加载后再添加
     private java.awt.event.AdjustmentListener scrollListener;
     private JPanel loadingPanel;
-    
+
     private AtMentionManager atMentionManager;
     private SpringAiService aiService;
     private String connectedDeviceName;
@@ -70,12 +70,12 @@ public class MainChatPanel extends BaseChatPanel {
         super();
         this.parentFrame = parentFrame;
         setHeaderTitle("未连接");
-        
+
         this.atMentionManager = new AtMentionManager(inputArea);
 
         // 核心功能初始化
         setupInputExtensions(); // 粘贴、拖拽等
-        
+
         // 初始化滚动监听器，但暂不添加到 ScrollBar
         scrollListener = e -> {
             if (!e.getValueIsAdjusting() && e.getValue() == 0) {
@@ -107,7 +107,7 @@ public class MainChatPanel extends BaseChatPanel {
     public void setClient(BluetoothClient client) {
         this.client = client;
     }
-    
+
     public void setAiService(SpringAiService aiService) {
         this.aiService = aiService;
     }
@@ -136,7 +136,7 @@ public class MainChatPanel extends BaseChatPanel {
             clearInput();
             return;
         }
-        
+
         String mention = AtMentionManager.extractRawMention(text);
         if (mention != null) {
             String prompt = AtMentionManager.stripMention(text);
@@ -236,35 +236,55 @@ public class MainChatPanel extends BaseChatPanel {
                 return;
 
             // 1. Files
-            try {
-                Object data = t.getTransferData(DataFlavor.javaFileListFlavor);
-                if (data instanceof java.util.List) {
+            if (t.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                try {
                     @SuppressWarnings("unchecked")
-                    java.util.List<File> files = (java.util.List<File>) data;
+                    java.util.List<File> files = (java.util.List<File>) t
+                            .getTransferData(DataFlavor.javaFileListFlavor);
                     for (File file : files) {
                         performFileSend(file);
                     }
                     return;
+                } catch (UnsupportedFlavorException ignored) {
                 }
-            } catch (UnsupportedFlavorException ignored) {
             }
 
-            // 2. Images (Placeholder / Simplified)
-            try {
-                Object image = t.getTransferData(DataFlavor.imageFlavor);
-                if (image != null) {
-                    return;
+            // 2. Images — 保存为临时 PNG 后发送
+            if (t.isDataFlavorSupported(DataFlavor.imageFlavor)) {
+                try {
+                    java.awt.image.BufferedImage image = (java.awt.image.BufferedImage) t
+                            .getTransferData(DataFlavor.imageFlavor);
+                    if (image != null) {
+                        // 保存到下载目录下的临时子目录
+                        String baseDir = AppConfig.getDownloadPath();
+                        File dir = new File(baseDir, "BlueLink-图片");
+                        if (!dir.exists())
+                            dir.mkdirs();
+
+                        String time = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+                        File imgFile = new File(dir, "截图_" + time + ".png");
+                        int idx = 1;
+                        while (imgFile.exists()) {
+                            imgFile = new File(dir, "截图_" + time + "_" + idx + ".png");
+                            idx++;
+                        }
+                        javax.imageio.ImageIO.write(image, "PNG", imgFile);
+                        performFileSend(imgFile);
+                        return;
+                    }
+                } catch (UnsupportedFlavorException ignored) {
                 }
-            } catch (UnsupportedFlavorException ignored) {
             }
 
             // 3. Text
-            try {
-                Object text = t.getTransferData(DataFlavor.stringFlavor);
-                if (text != null) {
-                    inputArea.paste();
+            if (t.isDataFlavorSupported(DataFlavor.stringFlavor)) {
+                try {
+                    Object text = t.getTransferData(DataFlavor.stringFlavor);
+                    if (text != null) {
+                        inputArea.paste();
+                    }
+                } catch (UnsupportedFlavorException ignored) {
                 }
-            } catch (UnsupportedFlavorException ignored) {
             }
         } catch (IOException ex) {
             ex.printStackTrace();
@@ -292,8 +312,7 @@ public class MainChatPanel extends BaseChatPanel {
                             appendAiChunk("\n[Error: " + error.getMessage() + "]");
                             onAiComplete();
                         }),
-                        () -> SwingUtilities.invokeLater(this::onAiComplete)
-                );
+                        () -> SwingUtilities.invokeLater(this::onAiComplete));
     }
 
     private void handleRemoteAiMention(String deviceName, String prompt) {
@@ -390,7 +409,8 @@ public class MainChatPanel extends BaseChatPanel {
             SwingUtilities.invokeLater(() -> appendAiChunk(chunk));
             return;
         }
-        if (!isAiResponding) return;
+        if (!isAiResponding)
+            return;
         if (currentAiResponse.length() == 0 && (chunk == null || chunk.isEmpty())) {
             return;
         }
@@ -450,7 +470,7 @@ public class MainChatPanel extends BaseChatPanel {
         currentAiSubscription = null;
         scrollToBottom();
     }
-    
+
     private javax.swing.text.JTextComponent findTextComponent(Container container) {
         for (Component c : container.getComponents()) {
             if (c instanceof javax.swing.text.JTextComponent) {
@@ -458,7 +478,8 @@ public class MainChatPanel extends BaseChatPanel {
             }
             if (c instanceof Container) {
                 javax.swing.text.JTextComponent found = findTextComponent((Container) c);
-                if (found != null) return found;
+                if (found != null)
+                    return found;
             }
         }
         return null;
@@ -651,7 +672,8 @@ public class MainChatPanel extends BaseChatPanel {
         }).start();
     }
 
-    private void updateHistoryUI(java.util.List<TransferDao.LogItem> list, long queryId, JScrollBar vertical, int oldHeight) {
+    private void updateHistoryUI(java.util.List<TransferDao.LogItem> list, long queryId, JScrollBar vertical,
+            int oldHeight) {
         if (list.isEmpty()) {
             hasLoadedAllHistory = true;
             insertSystemTipAt(0, "--- 已显示全部历史消息 ---");
@@ -686,15 +708,15 @@ public class MainChatPanel extends BaseChatPanel {
         SwingUtilities.invokeLater(() -> {
             // 关键：强制让 ScrollPane 更新布局状态，确保 getMaximum 获取到最新值
             // revalidate 只是标记无效，validate 才会立即触发布局计算
-            chatArea.validate(); 
+            chatArea.validate();
             chatScrollPane.validate();
-            
+
             JScrollBar vBar = chatScrollPane.getVerticalScrollBar();
 
             if (queryId == -1) {
                 // 首次加载，滚动到底部
                 vBar.setValue(vBar.getMaximum());
-                
+
                 // 延迟添加监听器，防止 setValue 触发的 AdjustmentEvent 导致循环
                 // 再次 invokeLater 确保在滚动动作完成后才挂载监听
                 SwingUtilities.invokeLater(() -> {

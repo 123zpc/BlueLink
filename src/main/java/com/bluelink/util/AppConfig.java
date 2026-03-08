@@ -104,6 +104,17 @@ public class AppConfig {
     }
 
     /**
+     * 获取最后一次成功连接（或发起连接扫描）的连接码
+     */
+    public static String getLastConnectedCode() {
+        return props.getProperty("last.connected.code", "");
+    }
+
+    public static void setLastConnectedCode(String code) {
+        saveConfig("last.connected.code", code);
+    }
+
+    /**
      * 获取文件下载路径
      * 默认为 用户主目录/Downloads
      */

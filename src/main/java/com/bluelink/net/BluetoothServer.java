@@ -204,6 +204,7 @@ public class BluetoothServer {
                         // 只有在运行时出错才报错，关闭时出错忽略
                         // notifyError("Accept 失败: " + lib.WSAGetLastError());
                         System.out.println("[Server] accept 返回 INVALID_SOCKET, err=" + lib.WSAGetLastError());
+                        break; // 跳出循环，让外层自动重启
                     }
                 }
             }

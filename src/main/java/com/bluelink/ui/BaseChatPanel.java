@@ -2,6 +2,7 @@ package com.bluelink.ui;
 
 import com.bluelink.ui.bubble.BubbleFactory;
 import com.bluelink.ui.bubble.BubblePanel;
+import com.bluelink.util.AppConfig;
 import com.bluelink.util.UiUtils;
 import net.miginfocom.swing.MigLayout;
 
@@ -130,6 +131,8 @@ public abstract class BaseChatPanel extends JPanel {
         inputArea.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
 
         // Key bindings
+        // Right-click menu and keys
+        initInputRightClickMenu();
         initInputKeyBindings();
 
         JScrollPane inputScroll = new JScrollPane(inputArea);
@@ -175,22 +178,93 @@ public abstract class BaseChatPanel extends JPanel {
         });
     }
 
-    private void initInputKeyBindings() {
-        inputArea.getInputMap().put(KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER, 0), "send");
-        inputArea.getActionMap().put("send", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                performSendAction();
+    private void initInputRightClickMenu() {
+        JPopupMenu popupMenu = new JPopupMenu();
+
+        JMenuItem pasteItem = new JMenuItem("粘贴 (Ctrl+V)");
+        pasteItem.addActionListener(e -> {
+            Action pasteAction = inputArea.getActionMap().get("paste-check");
+            if (pasteAction != null) {
+                pasteAction.actionPerformed(new ActionEvent(inputArea, ActionEvent.ACTION_PERFORMED, null));
+            } else {
+                inputArea.paste();
             }
         });
 
-        inputArea.getInputMap().put(
-                KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER, java.awt.event.InputEvent.CTRL_DOWN_MASK),
-                "newline");
-        inputArea.getActionMap().put("newline", new AbstractAction() {
+        JMenuItem copyItem = new JMenuItem("复制 (Ctrl+C)");
+        copyItem.addActionListener(e -> inputArea.copy());
+
+        JMenuItem cutItem = new JMenuItem("剪切 (Ctrl+X)");
+        cutItem.addActionListener(e -> inputArea.cut());
+
+        JMenu sendMethodMenu = new JMenu("发送方式");
+        JRadioButtonMenuItem enterToSendMessage = new JRadioButtonMenuItem("按 Enter 键发送");
+        JRadioButtonMenuItem ctrlEnterToSendMessage = new JRadioButtonMenuItem("按 Ctrl+Enter 键发送");
+        
+        ButtonGroup bg = new ButtonGroup();
+        bg.add(enterToSendMessage);
+        bg.add(ctrlEnterToSendMessage);
+
+        enterToSendMessage.addActionListener(e -> AppConfig.setEnterToSend(true));
+        ctrlEnterToSendMessage.addActionListener(e -> AppConfig.setEnterToSend(false));
+
+        sendMethodMenu.add(enterToSendMessage);
+        sendMethodMenu.add(ctrlEnterToSendMessage);
+
+        popupMenu.add(copyItem);
+        popupMenu.add(cutItem);
+        popupMenu.add(pasteItem);
+        popupMenu.addSeparator();
+        popupMenu.add(sendMethodMenu);
+
+        inputArea.setComponentPopupMenu(popupMenu);
+
+        // Update selected state dynamically on popup opening
+        popupMenu.addPopupMenuListener(new javax.swing.event.PopupMenuListener() {
+            @Override
+            public void popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent e) {
+                boolean isEnterToSend = AppConfig.isEnterToSend();
+                enterToSendMessage.setSelected(isEnterToSend);
+                ctrlEnterToSendMessage.setSelected(!isEnterToSend);
+                
+                boolean hasSelection = inputArea.getSelectedText() != null;
+                copyItem.setEnabled(hasSelection);
+                cutItem.setEnabled(hasSelection);
+            }
+
+            @Override
+            public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent e) {}
+            @Override
+            public void popupMenuCanceled(javax.swing.event.PopupMenuEvent e) {}
+        });
+    }
+
+    private void initInputKeyBindings() {
+        // Remove default enter behavior and make it dynamic
+        InputMap inputMap = inputArea.getInputMap();
+        ActionMap actionMap = inputArea.getActionMap();
+
+        inputMap.put(KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER, 0), "dynamic-enter");
+        actionMap.put("dynamic-enter", new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                inputArea.append("\n");
+                if (AppConfig.isEnterToSend()) {
+                    performSendAction();
+                } else {
+                    inputArea.append("\n");
+                }
+            }
+        });
+
+        inputMap.put(KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER, java.awt.event.InputEvent.CTRL_DOWN_MASK), "dynamic-ctrl-enter");
+        actionMap.put("dynamic-ctrl-enter", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (!AppConfig.isEnterToSend()) {
+                    performSendAction();
+                } else {
+                    inputArea.append("\n");
+                }
             }
         });
     }

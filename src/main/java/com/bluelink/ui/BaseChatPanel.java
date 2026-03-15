@@ -285,6 +285,8 @@ public abstract class BaseChatPanel extends JPanel {
 
     public void scrollToBottom() {
         SwingUtilities.invokeLater(() -> {
+            chatArea.validate();
+            chatScrollPane.validate();
             JScrollBar vertical = chatScrollPane.getVerticalScrollBar();
             vertical.setValue(vertical.getMaximum());
         });
@@ -331,6 +333,12 @@ public abstract class BaseChatPanel extends JPanel {
 
         chatArea.add(wrapper, "growx, wrap");
         scrollToBottom();
+
+        // 监听异步加载完成的事件（如图标或图片加载完成导致尺寸瞬间变大）
+        // 在尺寸真正确定后再强行执行一次查漏补缺的滚动
+        bubble.addPropertyChangeListener("bubbleLoaded", e -> {
+            scrollToBottom();
+        });
 
         return bubble;
     }

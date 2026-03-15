@@ -583,6 +583,10 @@ public class MainChatPanel extends BaseChatPanel {
         chatArea.add(wrapper, "growx, wrap");
         scrollToBottom();
 
+        bubble.addPropertyChangeListener("bubbleLoaded", e -> {
+            scrollToBottom();
+        });
+
         return bubble;
     }
 

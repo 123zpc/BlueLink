@@ -225,6 +225,9 @@ public class BubbleFactory {
         iconLabel.setPreferredSize(new Dimension(40, 50)); // 左侧 40px 宽
         filePanel.add(iconLabel, BorderLayout.WEST);
 
+        // 创建 BubblePanel 并应用自定义颜色
+        BubblePanel bubble = new BubblePanel(isSender, filePanel);
+
         // 异步加载真实图标
         new SwingWorker<Icon, Void>() {
             @Override
@@ -241,6 +244,10 @@ public class BubbleFactory {
                         iconLabel.repaint();
                     }
                 } catch (Exception ignore) {}
+                finally {
+                    // 通知外部容器，异步组件大小可能已变化，需重新计算滚动
+                    bubble.firePropertyChange("bubbleLoaded", false, true);
+                }
             }
         }.execute();
 
@@ -351,9 +358,6 @@ public class BubbleFactory {
             }
             c.addMouseListener(ma);
         }
-
-        // 创建 BubblePanel 并应用自定义颜色
-        BubblePanel bubble = new BubblePanel(isSender, filePanel);
 
         if (isSender) {
             // 发送者: 纯白卡片 + 浅灰边框
@@ -469,6 +473,10 @@ public class BubbleFactory {
         int MAX_W = 250;
         int MAX_H = 250;
         
+        BubblePanel bubble = new BubblePanel(isSender, imageLabel);
+        // 图片气泡设置背景
+        bubble.setBubbleBackground(isSender ? Color.WHITE : new Color(227, 242, 253));
+
         // 异步加载图片
         new SwingWorker<ImageIcon, Void>() {
             @Override
@@ -517,6 +525,9 @@ public class BubbleFactory {
                     }
                 } catch (Exception e) {
                     imageLabel.setText("Error");
+                } finally {
+                    // 通知外部容器，异步组件大小已变化，需重新计算滚动
+                    bubble.firePropertyChange("bubbleLoaded", false, true);
                 }
             }
         }.execute();
@@ -555,10 +566,6 @@ public class BubbleFactory {
                 }
             }
         });
-
-        BubblePanel bubble = new BubblePanel(isSender, imageLabel);
-        // 图片气泡设置背景
-        bubble.setBubbleBackground(isSender ? Color.WHITE : new Color(227, 242, 253));
         return bubble;
     }
 }

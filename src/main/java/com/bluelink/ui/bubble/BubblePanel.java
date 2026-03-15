@@ -118,11 +118,12 @@ public class BubblePanel extends JPanel {
             Shape originalClip = g2.getClip();
             g2.setClip(new java.awt.geom.RoundRectangle2D.Float(x, y, w, h, RADIUS, RADIUS));
             
-            // 进度条颜色 (半透明白色或强调色)
+            // 进度条颜色 (由于文件气泡背景为白色，所以发送者进度条需可见色)
             if (isSender) {
-                g2.setColor(new Color(255, 255, 255, 128)); // White on Blue (User)
+                // 使用带有一点主题蓝色的半透明色
+                g2.setColor(new Color(144, 202, 249, 150)); // Light Blue on White (User)
             } else {
-                g2.setColor(new Color(46, 204, 113, 180)); // Green on White (AI)
+                g2.setColor(new Color(46, 204, 113, 180)); // Green on White/Light Blue (AI)
             }
             
             // 底部进度条模式

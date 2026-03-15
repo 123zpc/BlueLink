@@ -9,8 +9,6 @@ import net.miginfocom.swing.MigLayout;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
-import java.awt.event.ComponentAdapter;
-import java.awt.event.ComponentEvent;
 import java.io.File;
 
 /**
@@ -103,16 +101,16 @@ public abstract class BaseChatPanel extends JPanel {
         backToBottomButton.setVisible(false);
         backToBottomButton.addActionListener(e -> scrollToBottom());
 
-        chatLayer = new JLayeredPane();
+        chatLayer = new JLayeredPane() {
+            @Override
+            public void doLayout() {
+                super.doLayout();
+                layoutChatLayer();
+            }
+        };
         chatLayer.setLayout(null);
         chatLayer.add(chatScrollPane, JLayeredPane.DEFAULT_LAYER);
         chatLayer.add(backToBottomButton, JLayeredPane.PALETTE_LAYER);
-        chatLayer.addComponentListener(new ComponentAdapter() {
-            @Override
-            public void componentResized(ComponentEvent e) {
-                layoutChatLayer();
-            }
-        });
 
         chatScrollPane.getVerticalScrollBar().addAdjustmentListener(e -> updateBackToBottomVisibility());
 

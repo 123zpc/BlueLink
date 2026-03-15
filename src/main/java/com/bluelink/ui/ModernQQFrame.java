@@ -1189,15 +1189,26 @@ public class ModernQQFrame extends JFrame {
                 try {
                     if (dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
                         dtde.acceptDrop(java.awt.dnd.DnDConstants.ACTION_COPY);
+                        java.awt.datatransfer.Transferable transferable = dtde.getTransferable();
                         @SuppressWarnings("unchecked")
-                        java.util.List<File> droppedFiles = (java.util.List<File>) dtde.getTransferable()
+                        java.util.List<File> droppedFiles = (java.util.List<File>) transferable
                                 .getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor);
 
-                        for (File file : droppedFiles) {
-                            if (mainChatPanel != null)
-                                mainChatPanel.performFileSend(file);
-                        }
+                        // 必须在此同步告知系统拖放结束，否则系统资源管理器锁死且外部无法继续读取 Transferable
                         dtde.dropComplete(true);
+
+                        // 再异步地处理发送文件（包括 UI 重绘和网络操作），彻底解除死锁
+                        new Thread(() -> {
+                            try {
+                                for (File file : droppedFiles) {
+                                    if (mainChatPanel != null)
+                                        mainChatPanel.performFileSend(file);
+                                }
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                        }).start();
+                        
                     } else {
                         dtde.rejectDrop();
                     }

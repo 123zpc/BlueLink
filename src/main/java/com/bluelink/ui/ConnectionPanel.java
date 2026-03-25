@@ -26,7 +26,7 @@ public class ConnectionPanel extends JPanel {
 
     private final ConnectionCallback callback;
     private JLabel statusLabel;
-    private JButton waitBtn, connectBtn, scanBtn, skipBtn;
+    private JButton waitBtn, connectBtn, scanBtn, skipBtn, lastConnectBtn;
     private CodeInputPanel codeInput;
     private boolean isWaiting = false;
     private boolean isScanning = false;
@@ -42,7 +42,36 @@ public class ConnectionPanel extends JPanel {
         setLayout(new MigLayout("insets 20 40 40 40, fill, wrap 1", "[grow]", "[][center, grow]push[]"));
         setBackground(Color.WHITE);
 
-        // --- 顶部右上角: 跳过/返回按钮 ---
+        // --- 顶部行: 左侧上次连接 / 右侧跳过返回按钮 ---
+        JPanel topRowPanel = new JPanel(new MigLayout("insets 0, fillx", "[left][right]"));
+        topRowPanel.setOpaque(false);
+
+        // 1. 左侧：上次连接 快捷按钮
+        lastConnectBtn = new JButton("上次连接");
+        lastConnectBtn.setFont(UiUtils.FONT_NORMAL.deriveFont(12f));
+        lastConnectBtn.setForeground(UiUtils.COLOR_PRIMARY);
+        lastConnectBtn.setBorderPainted(false);
+        lastConnectBtn.setContentAreaFilled(false);
+        lastConnectBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+        String lastCode = AppConfig.getLastConnectedCode();
+        if (lastCode != null && !lastCode.isEmpty()) {
+            lastConnectBtn.setText("上次连接: " + lastCode);
+            lastConnectBtn.setVisible(true);
+        } else {
+            lastConnectBtn.setVisible(false);
+        }
+
+        lastConnectBtn.addActionListener(e -> {
+            String code = AppConfig.getLastConnectedCode();
+            if (code != null && !code.isEmpty()) {
+                showConnectInput(); // 确保输入区域可见
+                codeInput.setCode(code);
+                startScan();
+            }
+        });
+
+        // 2. 右侧：跳过/返回按钮
         skipBtn = new JButton("离线模式");
         skipBtn.setFont(UiUtils.FONT_NORMAL.deriveFont(12f));
         skipBtn.setForeground(new Color(100, 100, 100));
@@ -65,7 +94,10 @@ public class ConnectionPanel extends JPanel {
                 callback.onSkip();
             }
         });
-        add(skipBtn, "right");
+
+        topRowPanel.add(lastConnectBtn, "cell 0 0");
+        topRowPanel.add(skipBtn, "cell 1 0");
+        add(topRowPanel, "growx");
 
         // --- 头部：头像和连接码 ---
         JPanel headerPanel = new JPanel(new MigLayout("wrap 1, insets 0", "[center]"));
@@ -160,7 +192,8 @@ public class ConnectionPanel extends JPanel {
         scanBtn.addActionListener(e -> startScan());
 
         inputPanel.add(codeInput);
-        inputPanel.add(scanBtn, "gaptop 15");
+        inputPanel.add(scanBtn, "gaptop 15, wrap");
+
         inputPanel.setVisible(false); // 初始隐藏
 
         add(inputPanel, "id inputPanel, align center");
@@ -319,12 +352,25 @@ public class ConnectionPanel extends JPanel {
         for (Component c : getComponents()) {
             c.setVisible(true);
         }
+
+        // 动态刷新上次连接按钮
+        if (lastConnectBtn != null) {
+            String lastCode = AppConfig.getLastConnectedCode();
+            if (lastCode != null && !lastCode.isEmpty()) {
+                lastConnectBtn.setText("上次连接: " + lastCode);
+                lastConnectBtn.setVisible(true);
+            } else {
+                lastConnectBtn.setVisible(false);
+            }
+        }
+
         statusLabel.setText("输入对方连接码，点击扫描");
         codeInput.focusFirst();
     }
 
     private void startScan() {
-        if (isScanning) return; // 防止重复点击
+        if (isScanning)
+            return; // 防止重复点击
 
         String targetCode = codeInput.getCode().trim(); // 去除可能的空白字符
         System.out.println("开始扫描，目标连接码: '" + targetCode + "'");
@@ -343,6 +389,9 @@ public class ConnectionPanel extends JPanel {
             statusLabel.setForeground(new Color(200, 80, 80));
             return;
         }
+
+        // 记录最新有效的目标连接码
+        AppConfig.setLastConnectedCode(targetCode);
 
         isScanning = true;
 
@@ -406,7 +455,7 @@ public class ConnectionPanel extends JPanel {
                 System.out.println("正在执行设备发现...");
                 List<BluetoothUtils.BluetoothDevice> devices = BluetoothUtils.discoverDevices(10);
                 System.out.println("设备发现完成，找到 " + devices.size() + " 个设备");
-                
+
                 BluetoothUtils.BluetoothDevice target = BluetoothUtils.findDeviceByCode(targetCode, devices);
                 if (target != null) {
                     System.out.println("找到目标设备: " + target);
@@ -607,6 +656,66 @@ public class ConnectionPanel extends JPanel {
         });
     }
 
+    public void resetState() {
+        SwingUtilities.invokeLater(() -> {
+            isWaiting = false;
+            isScanning = false;
+
+            if (scanThread != null) {
+                scanThread.interrupt();
+                scanThread = null;
+            }
+
+            if (timeoutTimer != null) {
+                timeoutTimer.stop();
+                timeoutTimer = null;
+            }
+
+            waitBtn.setText("等待连接");
+            waitBtn.setForeground(UiUtils.COLOR_PRIMARY);
+            waitBtn.setBorder(BorderFactory.createLineBorder(new Color(220, 230, 240), 2));
+            for (java.awt.event.ActionListener l : waitBtn.getActionListeners()) {
+                waitBtn.removeActionListener(l);
+            }
+            waitBtn.addActionListener(e -> startWaiting());
+
+            connectBtn.setText("连接他人");
+            connectBtn.setForeground(UiUtils.COLOR_PRIMARY);
+            connectBtn.setBorder(BorderFactory.createLineBorder(new Color(220, 230, 240), 2));
+            for (java.awt.event.ActionListener l : connectBtn.getActionListeners()) {
+                connectBtn.removeActionListener(l);
+            }
+            connectBtn.addActionListener(e -> showConnectInput());
+
+            scanBtn.setText("扫描连接");
+            scanBtn.setEnabled(true);
+
+            connectBtn.setEnabled(true);
+            waitBtn.setEnabled(true);
+            codeInput.setEnabled(true);
+            codeInput.clear();
+
+            statusLabel.setText(" ");
+            statusLabel.setForeground(Color.GRAY);
+            for (java.awt.event.MouseListener l : statusLabel.getMouseListeners()) {
+                statusLabel.removeMouseListener(l);
+            }
+
+            // 动态刷新上次连接按钮
+            if (lastConnectBtn != null) {
+                String lastCode = AppConfig.getLastConnectedCode();
+                if (lastCode != null && !lastCode.isEmpty()) {
+                    lastConnectBtn.setText("上次连接: " + lastCode);
+                    lastConnectBtn.setVisible(true);
+                } else {
+                    lastConnectBtn.setVisible(false);
+                }
+            }
+
+            revalidate();
+            repaint();
+        });
+    }
 
     /**
      * 设置是否从设置页面进入

@@ -77,6 +77,11 @@ public class TrayManager {
         // TrayIcon 不使用 AWT PopupMenu，而是通过鼠标事件弹出 JPopupMenu
         trayIcon = new TrayIcon(image, "BlueLink");
         trayIcon.setImageAutoSize(true);
+        trayIcon.addActionListener(e -> {
+            frame.setVisible(true);
+            frame.setExtendedState(JFrame.NORMAL);
+            frame.toFront();
+        });
 
         trayIcon.addMouseListener(new MouseAdapter() {
             @Override
@@ -109,9 +114,31 @@ public class TrayManager {
                         y = mouseLocation.y; // 如果上方空间不够，则在下方显示
                     }
 
-                    popupMenu.setLocation(x, y);
-                    popupMenu.setInvoker(popupMenu);
-                    popupMenu.setVisible(true);
+                    // 修复 JPopupMenu 无法自动消失的 bug
+                    // 通过创建一个透明隐藏的 JDialog 来获取和失去焦点
+                    JDialog hiddenDialog = new JDialog();
+                    hiddenDialog.setUndecorated(true);
+                    hiddenDialog.setSize(0, 0);
+                    hiddenDialog.setLocation(x, y);
+                    hiddenDialog.setAlwaysOnTop(true);
+
+                    popupMenu.addPopupMenuListener(new javax.swing.event.PopupMenuListener() {
+                        @Override
+                        public void popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent e) {}
+
+                        @Override
+                        public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent e) {
+                            hiddenDialog.dispose();
+                        }
+
+                        @Override
+                        public void popupMenuCanceled(javax.swing.event.PopupMenuEvent e) {
+                            hiddenDialog.dispose();
+                        }
+                    });
+
+                    hiddenDialog.setVisible(true);
+                    popupMenu.show(hiddenDialog, 0, 0);
                 }
             }
         });

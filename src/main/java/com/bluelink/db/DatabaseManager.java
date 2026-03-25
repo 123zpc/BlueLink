@@ -18,6 +18,8 @@ public class DatabaseManager {
     private static final String DB_URL = "jdbc:h2:file:" + DB_DIR.replace("\\", "/") + "/" + DB_NAME + ";AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1";
     private static final String DB_USER = "sa";
     private static final String DB_PASS = "";
+    private static final Object INIT_LOCK = new Object();
+    private static volatile boolean initialized = false;
 
     static {
         // 确保数据库目录存在
@@ -37,30 +39,48 @@ public class DatabaseManager {
     }
 
     public static void initDatabase() {
-        System.out.println("正在初始化数据库: " + DB_URL);
-        try (Connection conn = getConnection();
-                Statement stmt = conn.createStatement()) {
+        if (initialized) {
+            return;
+        }
+        synchronized (INIT_LOCK) {
+            if (initialized) {
+                return;
+            }
+            System.out.println("正在初始化数据库: " + DB_URL);
+            try (Connection conn = openConnection();
+                    Statement stmt = conn.createStatement()) {
 
-            // 创建传输记录表
-            String sql = "CREATE TABLE IF NOT EXISTS transfer_log (" +
-                    "id IDENTITY PRIMARY KEY, " +
-                    "type VARCHAR(20), " + // TEXT, FILE
-                    "direction VARCHAR(10), " + // SEND, RECV
-                    "content VARCHAR(MAX), " + // 文本内容或文件路径
-                    "file_size BIGINT, " +
-                    "timestamp BIGINT, " +
-                    "status VARCHAR(20))"; // SUCCESS, FAILED
+                // 创建传输记录表
+                String sql = "CREATE TABLE IF NOT EXISTS transfer_log (" +
+                        "id IDENTITY PRIMARY KEY, " +
+                        "type VARCHAR(20), " +
+                        "direction VARCHAR(10), " +
+                        "content VARCHAR(MAX), " +
+                        "file_size BIGINT, " +
+                        "timestamp BIGINT, " +
+                        "status VARCHAR(20), " +
+                        "render_type VARCHAR(20))";
 
-            stmt.execute(sql);
-            System.out.println("数据库初始化完成.");
+                stmt.execute(sql);
+                stmt.execute("ALTER TABLE transfer_log ADD COLUMN IF NOT EXISTS render_type VARCHAR(20)");
+                System.out.println("数据库初始化完成.");
+                initialized = true;
 
-        } catch (SQLException e) {
-            e.printStackTrace();
-            throw new RuntimeException("数据库初始化失败", e);
+            } catch (SQLException e) {
+                e.printStackTrace();
+                throw new RuntimeException("数据库初始化失败", e);
+            }
         }
     }
 
     public static Connection getConnection() throws SQLException {
+        if (!initialized) {
+            initDatabase();
+        }
+        return openConnection();
+    }
+
+    private static Connection openConnection() throws SQLException {
         return DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
     }
 }

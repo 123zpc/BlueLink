@@ -106,9 +106,9 @@ public class BubblePanel extends JPanel {
         if (customBackground != null) {
             g2.setColor(customBackground);
         } else if (isSender) {
-            g2.setColor(Color.WHITE);
+            g2.setColor(UiUtils.COLOR_PRIMARY); // 发送者 (用户): 蓝色背景
         } else {
-            g2.setColor(UiUtils.COLOR_PRIMARY);
+            g2.setColor(Color.WHITE); // 接收者 (AI): 白色背景
         }
         g2.fillRoundRect(x, y, w, h, RADIUS, RADIUS);
 
@@ -118,11 +118,12 @@ public class BubblePanel extends JPanel {
             Shape originalClip = g2.getClip();
             g2.setClip(new java.awt.geom.RoundRectangle2D.Float(x, y, w, h, RADIUS, RADIUS));
             
-            // 进度条颜色 (半透明白色或强调色)
+            // 进度条颜色 (由于文件气泡背景为白色，所以发送者进度条需可见色)
             if (isSender) {
-                g2.setColor(new Color(46, 204, 113, 180)); // Green on White
+                // 使用带有一点主题蓝色的半透明色
+                g2.setColor(new Color(144, 202, 249, 150)); // Light Blue on White (User)
             } else {
-                g2.setColor(new Color(255, 255, 255, 128)); // White on Blue
+                g2.setColor(new Color(46, 204, 113, 180)); // Green on White/Light Blue (AI)
             }
             
             // 底部进度条模式
@@ -141,7 +142,7 @@ public class BubblePanel extends JPanel {
             g2.setColor(customBorderColor);
             g2.setStroke(new BasicStroke(1));
             g2.drawRoundRect(x, y, w, h, RADIUS, RADIUS);
-        } else if (isSender) {
+        } else if (!isSender) { // AI (White Bubble) needs a border
             g2.setColor(new Color(220, 220, 220)); // 浅灰色边框
             g2.setStroke(new BasicStroke(1));
             g2.drawRoundRect(x, y, w, h, RADIUS, RADIUS);
@@ -188,8 +189,8 @@ public class BubblePanel extends JPanel {
         if (isFailed) {
             updateTextColor(this, new Color(220, 60, 60));
         } else {
-            // 恢复颜色 (简单处理，假设发送者是黑色)
-            updateTextColor(this, Color.BLACK);
+            // 恢复颜色
+            updateTextColor(this, isSender ? Color.WHITE : Color.BLACK);
         }
     }
 

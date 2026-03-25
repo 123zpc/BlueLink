@@ -10,11 +10,20 @@ import java.lang.reflect.Method;
  */
 public class FileIconUtils {
 
+    // 简单内存缓存：路径 -> 图标
+    private static final java.util.Map<String, Icon> ICON_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+
     public static Icon getFileIcon(File file) {
         if (file == null || !file.exists()) {
             return UIManager.getIcon("FileView.fileIcon");
         }
         
+        String path = file.getAbsolutePath();
+        if (ICON_CACHE.containsKey(path)) {
+            return ICON_CACHE.get(path);
+        }
+        
+        Icon icon = null;
         try {
             // 尝试使用 sun.awt.shell.ShellFolder 获取大图标 (32x32)
             // 这种方式在 Windows 上能获取到比 FileSystemView 更清晰的图标
@@ -23,11 +32,19 @@ public class FileIconUtils {
             Object sf = getShellFolder.invoke(null, file);
             Method getIcon = shellFolderClass.getMethod("getIcon", boolean.class);
             // true = Large Icon (通常为 32x32)
-            return (Icon) getIcon.invoke(sf, true);
+            icon = (Icon) getIcon.invoke(sf, true);
         } catch (Exception e) {
             // 忽略异常 (如模块访问限制)，回退到标准 API
         }
         
-        return javax.swing.filechooser.FileSystemView.getFileSystemView().getSystemIcon(file);
+        if (icon == null) {
+            icon = javax.swing.filechooser.FileSystemView.getFileSystemView().getSystemIcon(file);
+        }
+        
+        if (icon != null) {
+            ICON_CACHE.put(path, icon);
+        }
+        
+        return icon;
     }
 }

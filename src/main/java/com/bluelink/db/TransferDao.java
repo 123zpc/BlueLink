@@ -12,12 +12,13 @@ public class TransferDao {
     // 实体类
     public static class LogItem {
         public long id;
-        public String type; // TEXT, FILE
-        public boolean isSender; // true=SEND, false=RECV
+        public String type;
+        public boolean isSender;
         public String content;
         public long fileSize;
         public long timestamp;
         public String status;
+        public String renderType;
 
         public LogItem(String type, boolean isSender, String content, long fileSize) {
             this.type = type;
@@ -26,6 +27,7 @@ public class TransferDao {
             this.fileSize = fileSize;
             this.timestamp = System.currentTimeMillis();
             this.status = "SUCCESS";
+            this.renderType = "TEXT".equals(type) ? "TEXT" : null;
         }
 
         // 构造函数供查询使用
@@ -34,7 +36,7 @@ public class TransferDao {
     }
 
     public static void save(LogItem item) {
-        String sql = "INSERT INTO transfer_log (type, direction, content, file_size, timestamp, status) VALUES (?, ?, ?, ?, ?, ?)";
+        String sql = "INSERT INTO transfer_log (type, direction, content, file_size, timestamp, status, render_type) VALUES (?, ?, ?, ?, ?, ?, ?)";
         try (Connection conn = DatabaseManager.getConnection();
                 PreparedStatement pstmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
 
@@ -44,6 +46,7 @@ public class TransferDao {
             pstmt.setLong(4, item.fileSize);
             pstmt.setLong(5, item.timestamp == 0 ? System.currentTimeMillis() : item.timestamp);
             pstmt.setString(6, item.status == null ? "SUCCESS" : item.status);
+            pstmt.setString(7, item.renderType);
 
             pstmt.executeUpdate();
 
@@ -94,6 +97,7 @@ public class TransferDao {
                     item.fileSize = rs.getLong("file_size");
                     item.timestamp = rs.getLong("timestamp");
                     item.status = rs.getString("status");
+                    item.renderType = rs.getString("render_type");
                     list.add(item);
                 }
             }

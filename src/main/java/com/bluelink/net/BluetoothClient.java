@@ -23,7 +23,6 @@ public class BluetoothClient {
     private JnaSocketOutputStream outputStream;
     private final Object lock = new Object();
     private volatile boolean isConnecting = false;
-    private boolean winsockInitialized = false;
 
     public void setListener(TransferListener listener) {
         this.listener = listener;
@@ -49,13 +48,10 @@ public class BluetoothClient {
             try {
                 // 确保 Winsock 初始化
                 WinsockNative.WSAData data = new WinsockNative.WSAData();
-                if (lib.WSAStartup((short) 0x0202, data) == 0) {
-                    synchronized (lock) {
-                        winsockInitialized = true;
-                    }
-                }
+                lib.WSAStartup((short) 0x0202, data);
 
-                socketHandle = lib.socket(WinsockNative.AF_BTH, WinsockNative.SOCK_STREAM, WinsockNative.BTHPROTO_RFCOMM);
+                socketHandle = lib.socket(WinsockNative.AF_BTH, WinsockNative.SOCK_STREAM,
+                        WinsockNative.BTHPROTO_RFCOMM);
                 if (socketHandle == WinsockNative.INVALID_SOCKET) {
                     notifyError("创建客户端 Socket 失败");
                     resetConnectingState();
@@ -87,18 +83,18 @@ public class BluetoothClient {
                 addr.write();
 
                 System.out.println("[Client] 正在连接: " + addressStr + " (UUID: SPP)");
-                
+
                 // JNA: 在调用前清除错误，确保获取的是本次调用的错误
                 Native.setLastError(0);
                 int connectResult = lib.connect(socketHandle, addr, addr.size());
                 System.out.println("[Client] connect 返回值: " + connectResult);
-                
+
                 if (connectResult == WinsockNative.SOCKET_ERROR) {
                     int errorCode = Native.getLastError();
                     if (errorCode == 0) {
-                         errorCode = lib.WSAGetLastError();
+                        errorCode = lib.WSAGetLastError();
                     }
-                    
+
                     System.out.println("[Client] 连接失败，错误码: " + errorCode);
                     notifyError("连接失败: " + errorCode);
                     lib.closesocket(socketHandle);
@@ -107,14 +103,14 @@ public class BluetoothClient {
                 }
 
                 System.out.println("[Client] Socket 连接成功，正在创建会话...");
-                
+
                 synchronized (lock) {
                     this.clientSocket = socketHandle;
                     this.isConnecting = false;
                 }
 
                 outputStream = new JnaSocketOutputStream(clientSocket);
-                
+
                 BluetoothSession session = new BluetoothSession(clientSocket, listener);
                 if (listener != null) {
                     listener.onSessionCreated(session);
@@ -174,17 +170,10 @@ public class BluetoothClient {
                 WinsockNative.INSTANCE.closesocket(clientSocket);
                 clientSocket = WinsockNative.INVALID_SOCKET;
             }
+            outputStream = null;
             isConnecting = false;
-            
-            // 只有在本实例初始化了 Winsock 时才清理
-            if (winsockInitialized) {
-                try {
-                    WinsockNative.INSTANCE.WSACleanup();
-                } catch (Throwable t) {
-                    // ignore
-                }
-                winsockInitialized = false;
-            }
+            // 注意：不调用 WSACleanup()，Winsock 生命周期由应用级管理
+            // 每次断线就清理会导致后续重连时 socket 创建失败
         }
     }
 

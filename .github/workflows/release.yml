@@ -47,7 +47,7 @@ jobs:
       - name: Locate JAR
         id: jar
         run: |
-          $jar = Get-ChildItem target -Filter "*.jar" | Where-Object { $_.Name -notlike "*sources*" -and $_.Name -notlike "*javadoc*" } | Select-Object -First 1
+          $jar = Get-ChildItem target -Filter "*.jar" | Where-Object { $_.Name -notlike "*sources*" -and $_.Name -notlike "*javadoc*" -and $_.Name -notlike "*.original" } | Select-Object -First 1
           if (-not $jar) { throw "No jar found in target directory" }
           echo "JAR_NAME=$($jar.Name)" >> $env:GITHUB_ENV
         shell: powershell
@@ -64,7 +64,7 @@ jobs:
             --name $env:APP_NAME `
             --input jpt `
             --main-jar $env:JAR_NAME `
-            --main-class com.bluelink.Main `
+            --main-class org.springframework.boot.loader.launch.JarLauncher `
             --icon src\main\resources\app_icon.ico `
             --vendor BlueLink `
             --dest release
@@ -78,7 +78,7 @@ jobs:
             --name $env:APP_NAME `
             --input jpt `
             --main-jar $env:JAR_NAME `
-            --main-class com.bluelink.Main `
+            --main-class org.springframework.boot.loader.launch.JarLauncher `
             --icon src\main\resources\app_icon.ico `
             --vendor BlueLink `
             --win-menu `
@@ -146,5 +146,7 @@ jobs:
           files: |
             release/*.exe
             release/*.msi
+          # 如果 tag 中包含 preview, beta, alpha 等字眼，自动标记为预发布版
+          prerelease: ${{ contains(github.ref, '-preview') || contains(github.ref, '-beta') || contains(github.ref, '-rc') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

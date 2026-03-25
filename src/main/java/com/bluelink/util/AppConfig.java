@@ -3,6 +3,8 @@ package com.bluelink.util;
 import java.io.File;
 import java.io.InputStream;
 import java.util.Properties;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 应用配置管理
@@ -10,6 +12,7 @@ import java.util.Properties;
  */
 public class AppConfig {
     private static final Properties props = new Properties();
+    private static final ExecutorService saveExecutor = Executors.newSingleThreadExecutor();
     private static final String APP_NAME = "BlueLink";
     public static final String APP_DATA_DIR;
     private static final String CONFIG_FILE_NAME = "config.properties";
@@ -56,7 +59,7 @@ public class AppConfig {
 
     public static void saveConfig(String key, String value) {
         props.setProperty(key, value);
-        saveToFile();
+        saveExecutor.submit(AppConfig::saveToFile);
     }
 
     private static void saveToFile() {
@@ -101,6 +104,17 @@ public class AppConfig {
     }
 
     /**
+     * 获取最后一次成功连接（或发起连接扫描）的连接码
+     */
+    public static String getLastConnectedCode() {
+        return props.getProperty("last.connected.code", "");
+    }
+
+    public static void setLastConnectedCode(String code) {
+        saveConfig("last.connected.code", code);
+    }
+
+    /**
      * 获取文件下载路径
      * 默认为 用户主目录/Downloads
      */
@@ -128,5 +142,90 @@ public class AppConfig {
 
     public static void setEnterToSend(boolean enterToSend) {
         saveConfig("enter.to.send", String.valueOf(enterToSend));
+    }
+
+    /**
+     * 获取 AI API Base URL
+     * 默认为 DeepSeek 官方 API
+     */
+    public static String getAiApiUrl() {
+        return props.getProperty("ai.api.url", "https://api.deepseek.com");
+    }
+
+    public static void setAiApiUrl(String url) {
+        saveConfig("ai.api.url", url);
+    }
+
+    /**
+     * 获取 AI API Key
+     */
+    public static String getAiApiKey() {
+        return props.getProperty("ai.api.key", "");
+    }
+
+    public static void setAiApiKey(String key) {
+        saveConfig("ai.api.key", key);
+    }
+
+    /**
+     * 获取 AI 模型名称
+     * 默认为 deepseek-chat
+     */
+    public static String getAiModel() {
+        return props.getProperty("ai.model", "deepseek-chat");
+    }
+
+    public static void setAiModel(String model) {
+        saveConfig("ai.model", model);
+    }
+
+    /**
+     * 是否开启 AI 功能
+     */
+    public static boolean isAiEnabled() {
+        return Boolean.parseBoolean(props.getProperty("ai.enabled", "false"));
+    }
+
+    public static void setAiEnabled(boolean enabled) {
+        saveConfig("ai.enabled", String.valueOf(enabled));
+    }
+
+    /**
+     * 是否开启 AI 多轮对话
+     */
+    public static boolean isAiMultiTurnEnabled() {
+        return Boolean.parseBoolean(props.getProperty("ai.multi.turn", "false"));
+    }
+
+    public static void setAiMultiTurnEnabled(boolean enabled) {
+        saveConfig("ai.multi.turn", String.valueOf(enabled));
+    }
+
+    /**
+     * 获取 AI 历史记录保留天数
+     * 默认为 7 天
+     */
+    public static int getAiHistoryRetentionDays() {
+        try {
+            return Integer.parseInt(props.getProperty("ai.history.retention.days", "7"));
+        } catch (NumberFormatException e) {
+            return 7;
+        }
+    }
+
+    public static void setAiHistoryRetentionDays(int days) {
+        saveConfig("ai.history.retention.days", String.valueOf(days));
+    }
+
+    /**
+     * 是否开启内置 Redis
+     * 强制开启
+     */
+    public static boolean isEmbeddedRedisEnabled() {
+        return true;
+    }
+
+    public static void setEmbeddedRedisEnabled(boolean enabled) {
+        // No-op, forced enabled
     }
 }

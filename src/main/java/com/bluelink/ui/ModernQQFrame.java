@@ -4,17 +4,25 @@ import com.bluelink.util.MdCodeUtil;
 import com.bluelink.util.UiUtils;
 import com.formdev.flatlaf.extras.FlatSVGIcon;
 import net.miginfocom.swing.MigLayout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.swing.*;
 import java.awt.*;
 import java.awt.geom.Ellipse2D;
 import java.io.File;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import reactor.core.Disposable;
 
 /**
  * 主窗口框架
  * 模仿 QQ NT 风格布局
+ * 重构版：使用 MainChatPanel 和 AiChatPanel 组件
  */
 public class ModernQQFrame extends JFrame {
+
+    private static final Logger log = LoggerFactory.getLogger(ModernQQFrame.class);
 
     // CardLayout 页面管理
     private CardLayout cardLayout;
@@ -25,47 +33,31 @@ public class ModernQQFrame extends JFrame {
 
     private JPanel rootPanel;
     private JPanel sidebarPanel;
-    private JPanel contentPanel;
+    private JPanel contentPanel; // Holds MainChatPanel and AiChatPanel
 
-    // 右侧组件
-    private JLabel headerLabel;
-    private JPanel chatArea;
-    private JScrollPane chatScrollPane; // 保存 scrollPane 引用
-    private JTextArea inputArea; // 暂时用 JTextArea，后续升级
-    private JButton sendButton;
+    // 子组件
+    private MainChatPanel mainChatPanel;
+    private AiChatPanel aiChatPanel;
     private TrayManager trayManager;
 
-    // 悬浮层组件
-    private JLayeredPane layeredChatPane;
-    private JButton backToBottomBtn;
+    // Content container for switching between Chat and AI within root
+    private static final String CARD_MAIN_CHAT = "main_chat";
+    private static final String CARD_AI_CHAT = "ai_chat";
 
     // 状态记录
-    private long minLoadedId = Long.MAX_VALUE; // 当前加载到的最小 ID
-    private boolean isUserAtBottom = true; // 用户是否在底部
-    private boolean isLoadingHistory = false; // 是否正在加载历史消息
-    private boolean hasLoadedAllHistory = false; // 是否已加载全部历史
-
-    // 发送模式: true = 回车发送, false = Ctrl+回车发送
     private boolean enterToSend = com.bluelink.util.AppConfig.isEnterToSend();
 
     // 网络组件
     private com.bluelink.net.BluetoothServer server;
     private com.bluelink.net.BluetoothClient client;
     private com.bluelink.net.BluetoothSession currentSession;
-    
-    // 活跃的文件传输气泡 (fileName -> bubble)
-    private java.util.Map<String, com.bluelink.ui.bubble.BubblePanel> activeFileBubbles = new java.util.concurrent.ConcurrentHashMap<>();
-    // 正在发送的文件气泡 (fileName -> bubble)
-    private java.util.Map<String, com.bluelink.ui.bubble.BubblePanel> sendingFileBubbles = new java.util.concurrent.ConcurrentHashMap<>();
-    
-    // 发送任务执行器 (单线程，保证发送顺序)
-    private final java.util.concurrent.ExecutorService fileSendExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private String currentConnectedDeviceName;
 
     public ModernQQFrame() {
         initUI();
         initNetwork();
         trayManager = new TrayManager(this);
-        
+
         // 注册关闭钩子，确保进程结束时清理资源
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             shutdown();
@@ -77,179 +69,23 @@ public class ModernQQFrame extends JFrame {
      */
     public void shutdown() {
         System.out.println("[App] 正在关闭，清理资源...");
-        if (fileSendExecutor != null) {
-            fileSendExecutor.shutdownNow();
-        }
         if (server != null) {
-            try { server.stop(); } catch (Throwable t) {}
+            try {
+                server.stop();
+            } catch (Throwable t) {
+            }
         }
         if (client != null) {
-            try { client.close(); } catch (Throwable t) {}
+            try {
+                client.close();
+            } catch (Throwable t) {
+            }
         }
         if (currentSession != null) {
-            try { currentSession.close(); } catch (Throwable t) {}
-        }
-    }
-
-    private void initNetwork() {
-        // 1. 启动服务端
-        server = new com.bluelink.net.BluetoothServer();
-        server.setListener(new TransferListenerImpl());
-        server.start();
-
-        // 2. 初始化客户端
-        client = new com.bluelink.net.BluetoothClient();
-        client.setListener(new TransferListenerImpl());
-    }
-
-    private com.bluelink.ui.bubble.BubblePanel renderReceivingFileBubble(String fileName) {
-        // 创建接收中气泡 (使用新方法，文字显示"等待接收...")
-        com.bluelink.ui.bubble.BubblePanel bubble = com.bluelink.ui.bubble.BubbleFactory.createReceivingFileBubble(fileName);
-        // 初始化进度
-        bubble.setProgress(0f);
-        
-        // 包装
-        JPanel wrapper = new JPanel(new MigLayout("insets 2, fillx, gap 0", "[grow]", "[]"));
-        wrapper.setOpaque(false);
-        String constraints = "al left, width ::80%"; 
-        wrapper.add(bubble, constraints);
-        
-        // 添加到聊天区
-        chatArea.add(wrapper, "growx, wrap");
-        chatArea.revalidate();
-        chatArea.repaint();
-        scrollToBottom();
-        
-        return bubble;
-    }
-    
-    // 网络事件处理
-    private class TransferListenerImpl implements com.bluelink.net.TransferListener {
-        @Override
-        public void onMessageReceived(String sender, String content) {
-            SwingUtilities.invokeLater(() -> {
-                addMessage(false, content);
-                trayManager.showNotification("收到新消息", content);
-            });
-        }
-
-        @Override
-        public void onFileReceived(String sender, File file, String originalName) {
-            SwingUtilities.invokeLater(() -> {
-                System.out.println("[UI] FileReceived: " + originalName + " -> " + file.getAbsolutePath());
-                
-                // 1. 移除进度气泡
-                com.bluelink.ui.bubble.BubblePanel bubble = activeFileBubbles.remove(originalName);
-                if (bubble != null) {
-                    System.out.println("[UI] Removing progress bubble for: " + originalName);
-                    // 移除旧组件 (bubble 的父容器是 wrapper)
-                    java.awt.Container wrapper = bubble.getParent();
-                    if (wrapper != null) {
-                        chatArea.remove(wrapper);
-                    } else {
-                        System.err.println("[UI] Warning: Bubble parent is null!");
-                    }
-                } else {
-                    System.out.println("[UI] No progress bubble found for: " + originalName);
-                    // 尝试遍历查找 (防御性编程)
-                    // 有时候可能是 key 的问题？虽然理论上不应该
-                }
-                
-                // 2. 添加正式气泡 (这会保存到数据库)
-                addFileMessage(false, file);
-                trayManager.showNotification("收到文件", file.getName());
-                
-                // 3. 刷新界面
-                chatArea.revalidate();
-                chatArea.repaint();
-                scrollToBottom();
-            });
-        }
-
-        @Override
-        public void onTransferProgress(String fileName, long current, long total, boolean isReceive) {
-            SwingUtilities.invokeLater(() -> {
-                com.bluelink.ui.bubble.BubblePanel bubble;
-
-                if (isReceive) {
-                    bubble = activeFileBubbles.get(fileName);
-                    if (bubble == null) {
-                        bubble = renderReceivingFileBubble(fileName);
-                        activeFileBubbles.put(fileName, bubble);
-                    }
-                    
-                    String progressText = String.format("接收中 %s / %s", 
-                        com.bluelink.ui.bubble.BubbleFactory.formatSize(current),
-                        com.bluelink.ui.bubble.BubbleFactory.formatSize(total));
-                    com.bluelink.ui.bubble.BubbleFactory.updateBubbleSizeText(bubble, progressText);
-                } else {
-                    bubble = sendingFileBubbles.get(fileName);
-                    if (bubble != null) {
-                        String progressText = String.format("发送中 %s / %s", 
-                            com.bluelink.ui.bubble.BubbleFactory.formatSize(current),
-                            com.bluelink.ui.bubble.BubbleFactory.formatSize(total));
-                        com.bluelink.ui.bubble.BubbleFactory.updateBubbleSizeText(bubble, progressText);
-                    }
-                }
-                
-                if (bubble != null) {
-                    float p = (float) current / total;
-                    p = Math.max(0f, Math.min(1f, p));
-                    bubble.setProgress(p);
-
-                    // 发送完成后清理
-                    if (!isReceive && current >= total) {
-                        sendingFileBubbles.remove(fileName);
-                        // 恢复显示文件大小
-                        com.bluelink.ui.bubble.BubbleFactory.updateBubbleSizeText(bubble, com.bluelink.ui.bubble.BubbleFactory.formatSize(total));
-                        bubble.setProgress(-1f); // 隐藏进度条
-                    }
-                }
-            });
-        }
-
-        @Override
-        public void onConnectionStatusChanged(boolean isConnected, String deviceName) {
-            SwingUtilities.invokeLater(() -> {
-                headerLabel.setText(isConnected ? "已连接: " + deviceName : "未连接");
-                // 连接成功时自动切换到聊天页面并发送通知
-                if (isConnected) {
-                    showChatPage();
-                    // 发送系统通知
-                    trayManager.showNotification("连接成功", "已与 " + deviceName + " 建立连接");
-                    // 通知连接面板
-                    if (connectionPanel != null) {
-                        connectionPanel.onIncomingConnection(deviceName);
-                    }
-                } else {
-                    // 断开连接处理，重置客户端状态
-                    if (client != null) {
-                        client.close();
-                    }
-                    if (currentSession != null) {
-                        currentSession = null;
-                    }
-                }
-            });
-        }
-
-        @Override
-        public void onSessionCreated(com.bluelink.net.BluetoothSession session) {
-            currentSession = session;
-            System.out.println("[UI] 会话已建立，保存 session");
-        }
-
-        @Override
-        public void onError(String message) {
-            SwingUtilities.invokeLater(() -> {
-                System.err.println("错误: " + message);
-                trayManager.showNotification("错误", message);
-                
-                // 如果在连接页面，显示错误
-                if (connectionPanel != null && connectionPanel.isVisible()) {
-                    connectionPanel.onConnectionFailed(message);
-                }
-            });
+            try {
+                currentSession.close();
+            } catch (Throwable t) {
+            }
         }
     }
 
@@ -307,7 +143,7 @@ public class ModernQQFrame extends JFrame {
         createSidebar();
         rootPanel.add(sidebarPanel, "cell 0 0");
 
-        // 2.2 右侧内容区
+        // 2.2 右侧内容区 (CardLayout)
         createContentPanel();
         rootPanel.add(contentPanel, "cell 1 0");
 
@@ -319,17 +155,26 @@ public class ModernQQFrame extends JFrame {
         // === 默认显示连接页面 ===
         cardLayout.show(cardPanel, PAGE_CONNECTION);
 
-        // --- 绑定事件 ---
-        sendButton.addActionListener(e -> performSend());
-
-        // 输入框键盘事件：处理回车发送
-        setupInputKeyBindings();
-
-        // 输入框右键菜单：切换发送模式
-        setupInputContextMenu();
-
-        // --- 拖拽支持 ---
         enableDragAndDrop();
+    }
+
+    private void createContentPanel() {
+        contentPanel = new JPanel(new CardLayout());
+
+        mainChatPanel = new MainChatPanel(this);
+        mainChatPanel.setClient(client); // Initial client
+        if (currentConnectedDeviceName != null) {
+            mainChatPanel.setConnectedDeviceName(currentConnectedDeviceName);
+        }
+
+        aiChatPanel = new AiChatPanel();
+
+        contentPanel.add(mainChatPanel, CARD_MAIN_CHAT);
+        contentPanel.add(aiChatPanel, CARD_AI_CHAT);
+    }
+
+    private void switchContent(String cardName) {
+        ((CardLayout) contentPanel.getLayout()).show(contentPanel, cardName);
     }
 
     /**
@@ -337,13 +182,45 @@ public class ModernQQFrame extends JFrame {
      */
     private void showChatPage() {
         cardLayout.show(cardPanel, PAGE_CHAT);
+        // Default to Main Chat
+        switchContent(CARD_MAIN_CHAT);
+        if (mainChatPanel != null) {
+            mainChatPanel.setConnectedDeviceName(currentConnectedDeviceName);
+        }
+        // Load history if needed
+        // SwingUtilities.invokeLater(() -> mainChatPanel.loadHistory()); // Removed
+        // duplicate call
+        // mainChatPanel will handle its own initial load or via user interaction
+
+        // However, we DO need to trigger initial load if it hasn't been loaded.
+        // But MainChatPanel handles scrolling to bottom on first load.
+        // Let's call it ONCE here, but ensure MainChatPanel logic handles the "don't
+        // double load"
+
+        // Actually, if we call it here, it corresponds to the first "queryId=-1" in the
+        // log.
+        // If we DON'T call it here, who calls it?
+        // The scroll listener is only added AFTER first load.
+        // So we MUST call it here.
+        SwingUtilities.invokeLater(() -> mainChatPanel.initHistory());
     }
 
-    /**
-     * 切换到连接页面
-     */
-    private void showConnectionPage() {
-        showConnectionPage(false);
+    private com.bluelink.ai.SpringAiService aiService;
+
+    public void setAiService(com.bluelink.ai.SpringAiService aiService) {
+        this.aiService = aiService;
+        if (aiChatPanel != null) {
+            aiChatPanel.setAiService(aiService);
+        }
+        if (mainChatPanel != null) {
+            mainChatPanel.setAiService(aiService);
+        }
+    }
+
+    public void loadHistory() {
+        if (mainChatPanel != null) {
+            mainChatPanel.loadHistory();
+        }
     }
 
     /**
@@ -356,247 +233,15 @@ public class ModernQQFrame extends JFrame {
         cardLayout.show(cardPanel, PAGE_CONNECTION);
     }
 
-    /**
-     * 设置输入框的键盘绑定
-     * 根据 enterToSend 模式：
-     * - true: 回车发送，Ctrl+回车换行
-     * - false: Ctrl+回车发送，回车换行
-     */
-    private void setupInputKeyBindings() {
-        // 移除默认的回车行为
-        inputArea.getInputMap().put(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER, 0),
-                "sendOrNewline");
-        inputArea.getInputMap().put(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER,
-                java.awt.event.InputEvent.CTRL_DOWN_MASK), "ctrlEnterAction");
-
-        inputArea.getActionMap().put("sendOrNewline", new AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                if (enterToSend) {
-                    // 回车 = 发送
-                    performSend();
-                } else {
-                    // 回车 = 换行
-                    inputArea.insert("\n", inputArea.getCaretPosition());
-                }
-            }
-        });
-
-        inputArea.getActionMap().put("ctrlEnterAction", new AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                if (enterToSend) {
-                    // Ctrl+回车 = 换行
-                    inputArea.insert("\n", inputArea.getCaretPosition());
-                } else {
-                    // Ctrl+回车 = 发送
-                    performSend();
-                }
-            }
-        });
-    }
-
-    /**
-     * 设置输入框右键菜单，用于切换发送模式
-     */
-    private void setupInputContextMenu() {
-        JPopupMenu popup = new JPopupMenu();
-        JCheckBoxMenuItem enterSendItem = new JCheckBoxMenuItem("回车发送 (Ctrl+回车换行)", enterToSend);
-
-        enterSendItem.addActionListener(e -> {
-            enterToSend = enterSendItem.isSelected();
-            com.bluelink.util.AppConfig.setEnterToSend(enterToSend); // 持久化
-            String tip = enterToSend ? "当前模式: 回车发送" : "当前模式: Ctrl+回车发送";
-            inputArea.setToolTipText(tip);
-        });
-
-        popup.add(enterSendItem);
-        inputArea.setComponentPopupMenu(popup);
-
-        // 初始提示
-        inputArea.setToolTipText("当前模式: 回车发送");
-    }
-
-    private void enableDragAndDrop() {
-        // 定义统一的 DropTargetAdapter
-        java.awt.dnd.DropTargetAdapter dropListener = new java.awt.dnd.DropTargetAdapter() {
-            @Override
-            public void dragEnter(java.awt.dnd.DropTargetDragEvent dtde) {
-                if (dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
-                    dtde.acceptDrag(java.awt.dnd.DnDConstants.ACTION_COPY);
-                } else {
-                    dtde.rejectDrag();
-                }
-            }
-
-            @Override
-            public void dragOver(java.awt.dnd.DropTargetDragEvent dtde) {
-                if (dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
-                    dtde.acceptDrag(java.awt.dnd.DnDConstants.ACTION_COPY);
-                } else {
-                    dtde.rejectDrag();
-                }
-            }
-
-            @Override
-            public void dropActionChanged(java.awt.dnd.DropTargetDragEvent dtde) {
-                if (dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
-                    dtde.acceptDrag(java.awt.dnd.DnDConstants.ACTION_COPY);
-                } else {
-                    dtde.rejectDrag();
-                }
-            }
-
-            @SuppressWarnings("unchecked")
-            @Override
-            public void drop(java.awt.dnd.DropTargetDropEvent dtde) {
-                try {
-                    if (dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
-                        dtde.acceptDrop(java.awt.dnd.DnDConstants.ACTION_COPY);
-                        java.util.List<File> droppedFiles = (java.util.List<File>) dtde.getTransferable()
-                                .getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor);
-
-                        for (File file : droppedFiles) {
-                            performFileSend(file);
-                        }
-                        dtde.dropComplete(true);
-                    } else {
-                        dtde.rejectDrop();
-                    }
-                } catch (Throwable e) {
-                    e.printStackTrace();
-                    dtde.dropComplete(false);
-                }
-            }
-        };
-
-        // 方案：使用 GlassPane 覆盖整个窗口以实现全局拖拽
-        // 1. 创建一个透明的 Panel 作为 GlassPane
-        JPanel glassPane = new JPanel();
-        glassPane.setOpaque(false); // 透明，不遮挡底层画面
-        glassPane.setLayout(null);
-        
-        // 2. 为 GlassPane 设置 DropTarget
-        new java.awt.dnd.DropTarget(glassPane, dropListener);
-        
-        // 3. 设置为窗口的 GlassPane 并显示
-        this.setGlassPane(glassPane);
-        glassPane.setVisible(true); // 必须可见才能接收 Drop 事件
-        
-        // 注意：只要不给 GlassPane 添加 MouseListener，鼠标点击事件就会自动穿透到下层组件
-        // 这样既实现了"全窗口任意区域拖拽"，又不会影响按钮点击和文本输入
-    }
-
-    private void performSend() {
-        String text = inputArea.getText().trim();
-        if (text.isEmpty())
-            return;
-
-        if (text.startsWith("/connect ")) {
-            String addr = text.substring(9).trim();
-            client.connect(addr);
-            inputArea.setText("");
-            return;
-        }
-
-        // 1. 初始化并保存 (status=SENDING) -> 获取 ID
-        com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("TEXT", true, text, 0);
-        item.status = "SENDING";
-        com.bluelink.db.TransferDao.save(item);
-
-        // 2. Optimistic UI
-        com.bluelink.ui.bubble.BubblePanel bubble = renderTextBubble(true, text);
-        inputArea.setText(""); // 立即清空输入框
-
-        // 强制滚到底部
-        scrollToBottom();
-
-        // 3. 异步网络发送
-        new Thread(() -> {
-            try {
-                if (currentSession != null) {
-                    currentSession.sendMessage(text);
-                } else {
-                    client.send(text);
-                }
-
-                // 发送成功: 更新数据库状态 (Status=SUCCESS)
-                if (item.id > 0) {
-                    com.bluelink.db.TransferDao.updateStatus(item.id, "SUCCESS");
-                }
-
-            } catch (Exception e) {
-                // 发送失败: 更新 UI 和 数据库
-                SwingUtilities.invokeLater(() -> {
-                    if (bubble != null) {
-                        bubble.setStatus(true); // 显示失败红点
-                        // 绑定重试 action
-                        bubble.setRetryAction(() -> performResend(item, bubble));
-                    }
-                });
-
-                if (item.id > 0) {
-                    com.bluelink.db.TransferDao.updateStatus(item.id, "FAILED");
-                }
-            }
-        }).start();
-    }
-
-    private void performFileSend(File file) {
-        // 生成唯一任务ID，解决同名文件发送冲突导致 UI 进度更新混乱的问题
-        String taskKey = java.util.UUID.randomUUID().toString();
-        
-        // 1. 立即在 EDT 渲染 UI，确保气泡顺序与添加顺序一致 (从上到下)
-        SwingUtilities.invokeLater(() -> {
-            // Optimistic UI
-            com.bluelink.ui.bubble.BubblePanel bubble = renderFileBubble(true, file, taskKey);
-            
-            // 强制滚到底部
-            scrollToBottom();
-            
-            // 2. 将发送任务提交到单线程队列，确保网络发送顺序与 UI 顺序一致 (FIFO)
-            fileSendExecutor.submit(() -> {
-                // 2.1 数据库操作 (后台线程)
-                com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("FILE", true,
-                        file.getAbsolutePath(), file.length());
-                item.status = "SENDING";
-                com.bluelink.db.TransferDao.save(item);
-
-                try {
-                    // 2.2 网络发送 (阻塞执行)
-                    if (currentSession != null) {
-                        currentSession.sendFile(file, taskKey);
-                    } else {
-                        // 兼容旧客户端 (无进度)
-                        client.sendFile(file);
-                    }
-
-                    // 发送成功: 更新数据库状态 (Status=SUCCESS)
-                    if (item.id > 0) {
-                        com.bluelink.db.TransferDao.updateStatus(item.id, "SUCCESS");
-                    }
-
-                } catch (Exception e) {
-                    // 发送失败: 更新 UI 和 数据库
-                    SwingUtilities.invokeLater(() -> {
-                        if (bubble != null) {
-                            bubble.setStatus(true); // 显示失败红点
-                            // 绑定重试 action
-                            bubble.setRetryAction(() -> performResend(item, bubble));
-                        }
-                    });
-
-                    if (item.id > 0) {
-                        com.bluelink.db.TransferDao.updateStatus(item.id, "FAILED");
-                    }
-                }
-            });
-        });
-    }
-
+    // --- Sidebar Creation ---
     private void createSidebar() {
-        sidebarPanel = new JPanel(new MigLayout("insets 10, flowy, alignx center", "[center]", "[]20[]push"));
+        sidebarPanel = new JPanel(new MigLayout("insets 10, flowy, alignx center, gap 0", "[center]"));
         sidebarPanel.setBackground(UiUtils.COLOR_BG_SIDEBAR);
+        refreshSidebar();
+    }
+
+    private void refreshSidebar() {
+        sidebarPanel.removeAll();
 
         // 头像组件
         JComponent avatar = new JComponent() {
@@ -646,20 +291,290 @@ public class ModernQQFrame extends JFrame {
         codeLabel.setFont(UiUtils.FONT_NORMAL.deriveFont(10f));
 
         sidebarPanel.add(avatar);
-        sidebarPanel.add(codeLabel);
+        sidebarPanel.add(codeLabel, "gaptop 5");
+
+        if (com.bluelink.util.AppConfig.isAiEnabled()) {
+            // 聊天入口按钮
+            JComponent chatBtn = new JComponent() {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    super.paintComponent(g);
+                    UiUtils.enableAntialiasing(g);
+                    Graphics2D g2 = (Graphics2D) g;
+
+                    g2.setColor(UiUtils.COLOR_PRIMARY);
+                    Shape circle = new Ellipse2D.Double(0, 0, getWidth(), getHeight());
+                    g2.fill(circle);
+
+                    g2.setColor(Color.WHITE);
+                    g2.setFont(UiUtils.FONT_BOLD.deriveFont(14f));
+                    FontMetrics fm = g2.getFontMetrics();
+                    String text = "聊";
+                    int x = (getWidth() - fm.stringWidth(text)) / 2;
+                    int y = ((getHeight() - fm.getHeight()) / 2) + fm.getAscent();
+                    y -= 2;
+                    g2.drawString(text, x, y);
+                }
+
+                @Override
+                public Dimension getPreferredSize() {
+                    return new Dimension(40, 40);
+                }
+            };
+            chatBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            chatBtn.setToolTipText("聊天列表");
+            chatBtn.addMouseListener(new java.awt.event.MouseAdapter() {
+                @Override
+                public void mouseClicked(java.awt.event.MouseEvent e) {
+                    switchContent(CARD_MAIN_CHAT);
+                }
+            });
+
+            // AI 入口按钮
+            JComponent aiBtn = new JComponent() {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    super.paintComponent(g);
+                    UiUtils.enableAntialiasing(g);
+                    Graphics2D g2 = (Graphics2D) g;
+
+                    g2.setColor(new Color(110, 80, 200));
+                    Shape circle = new Ellipse2D.Double(0, 0, getWidth(), getHeight());
+                    g2.fill(circle);
+
+                    g2.setColor(Color.WHITE);
+                    g2.setFont(UiUtils.FONT_BOLD.deriveFont(14f));
+                    FontMetrics fm = g2.getFontMetrics();
+                    String text = "AI";
+                    int x = (getWidth() - fm.stringWidth(text)) / 2;
+                    int y = ((getHeight() - fm.getHeight()) / 2) + fm.getAscent();
+                    y -= 2;
+                    g2.drawString(text, x, y);
+                }
+
+                @Override
+                public Dimension getPreferredSize() {
+                    return new Dimension(40, 40);
+                }
+            };
+            aiBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            aiBtn.setToolTipText("AI 助手");
+            aiBtn.addMouseListener(new java.awt.event.MouseAdapter() {
+                @Override
+                public void mouseClicked(java.awt.event.MouseEvent e) {
+                    switchContent(CARD_AI_CHAT);
+                }
+            });
+
+            sidebarPanel.add(chatBtn, "gaptop 5");
+            sidebarPanel.add(aiBtn, "gaptop 5");
+        }
+
+        sidebarPanel.revalidate();
+        sidebarPanel.repaint();
     }
 
-    /**
-     * 显示设置对话框
-     */
+    // --- Network & DragDrop ---
+
+    private void initNetwork() {
+        server = new com.bluelink.net.BluetoothServer();
+        server.setListener(new TransferListenerImpl());
+        server.start();
+
+        client = new com.bluelink.net.BluetoothClient();
+        client.setListener(new TransferListenerImpl());
+
+        if (mainChatPanel != null)
+            mainChatPanel.setClient(client);
+    }
+
+    private class TransferListenerImpl implements com.bluelink.net.TransferListener {
+        private final Map<com.bluelink.net.BluetoothSession, Disposable> aiSubscriptions = new ConcurrentHashMap<>();
+
+        @Override
+        public void onMessageReceived(String sender, String content) {
+            com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("TEXT", false, content,
+                    0);
+            item.renderType = "TEXT";
+            com.bluelink.db.TransferDao.save(item);
+            SwingUtilities.invokeLater(() -> {
+                mainChatPanel.addTextBubble(false, content);
+                trayManager.showNotification("收到新消息", content);
+            });
+        }
+
+        @Override
+        public void onAiRequest(String prompt, com.bluelink.net.BluetoothSession session) {
+            log.debug("[UI] 收到 AI 请求: {}", prompt);
+
+            if (aiService == null) {
+                try {
+                    session.sendAiResponse("Error: Host AI 服务未就绪");
+                    session.sendAiDone();
+                } catch (Exception e) {
+                }
+                return;
+            }
+
+            Disposable existing = aiSubscriptions.remove(session);
+            if (existing != null && !existing.isDisposed()) {
+                existing.dispose();
+            }
+
+            Disposable disposable = aiService.streamChat(prompt)
+                    .subscribe(
+                            chunk -> {
+                                try {
+                                    session.sendAiResponse(chunk);
+                                } catch (Exception e) {
+                                    log.error("Failed to send AI response chunk", e);
+                                }
+                            },
+                            err -> {
+                                try {
+                                    session.sendAiResponse("\n[Error: " + err.getMessage() + "]");
+                                    session.sendAiDone();
+                                } catch (Exception e) {
+                                }
+                                aiSubscriptions.remove(session);
+                            },
+                            () -> {
+                                try {
+                                    session.sendAiDone();
+                                } catch (Exception e) {
+                                }
+                                aiSubscriptions.remove(session);
+                            });
+            aiSubscriptions.put(session, disposable);
+        }
+
+        @Override
+        public void onAiResponse(String chunk) {
+            SwingUtilities.invokeLater(() -> {
+                if (mainChatPanel != null && mainChatPanel.isRemoteAiResponding()) {
+                    mainChatPanel.onAiStreamChunk(chunk);
+                } else if (aiChatPanel != null) {
+                    aiChatPanel.onAiStreamChunk(chunk);
+                }
+            });
+        }
+
+        @Override
+        public void onAiDone() {
+            SwingUtilities.invokeLater(() -> {
+                if (mainChatPanel != null && mainChatPanel.isRemoteAiResponding()) {
+                    mainChatPanel.onAiStreamComplete();
+                } else if (aiChatPanel != null && aiChatPanel.isRemoteAiResponding()) {
+                    aiChatPanel.onAiStreamComplete();
+                }
+            });
+        }
+
+        @Override
+        public void onAiStop(com.bluelink.net.BluetoothSession session) {
+            Disposable disposable = aiSubscriptions.remove(session);
+            if (disposable != null && !disposable.isDisposed()) {
+                disposable.dispose();
+            }
+            try {
+                session.sendAiDone();
+            } catch (Exception e) {
+            }
+        }
+
+        @Override
+        public void onFileReceived(String sender, File file, String originalName) {
+            com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("FILE", false,
+                    file.getAbsolutePath(), file.length());
+            com.bluelink.db.TransferDao.save(item);
+            SwingUtilities.invokeLater(() -> {
+                mainChatPanel.onFileReceived(originalName, file);
+                trayManager.showNotification("收到文件", file.getName());
+            });
+        }
+
+        @Override
+        public void onTransferProgress(String fileName, long current, long total, boolean isReceive) {
+            SwingUtilities.invokeLater(() -> {
+                mainChatPanel.onTransferProgress(fileName, current, total, isReceive);
+            });
+        }
+
+        @Override
+        public void onConnectionStatusChanged(boolean isConnected, String deviceName) {
+            SwingUtilities.invokeLater(() -> {
+                if (isConnected) {
+                    currentConnectedDeviceName = deviceName;
+                    showChatPage();
+                    trayManager.showNotification("连接成功", "已与 " + deviceName + " 建立连接");
+                    if (connectionPanel != null) {
+                        connectionPanel.onIncomingConnection(deviceName);
+                    }
+                    if (mainChatPanel != null) {
+                        mainChatPanel.setConnectedDeviceName(deviceName);
+                    }
+                    if (aiChatPanel != null) {
+                        aiChatPanel.setConnectedDeviceName(deviceName);
+                    }
+                } else {
+                    // 关闭旧连接
+                    if (client != null)
+                        client.close();
+                    // 重建客户端实例，确保下次连接使用全新的干净状态
+                    client = new com.bluelink.net.BluetoothClient();
+                    client.setListener(new TransferListenerImpl());
+                    if (mainChatPanel != null)
+                        mainChatPanel.setClient(client);
+
+                    if (currentSession != null)
+                        currentSession = null;
+                    currentConnectedDeviceName = null;
+                    if (mainChatPanel != null)
+                        mainChatPanel.setSession(null);
+                    if (aiChatPanel != null)
+                        aiChatPanel.setSession(null);
+                    if (mainChatPanel != null)
+                        mainChatPanel.setConnectedDeviceName(null);
+                    if (aiChatPanel != null)
+                        aiChatPanel.setConnectedDeviceName(null);
+                    // 回到连接页，让用户重新发起连接
+                    if (connectionPanel != null)
+                        connectionPanel.resetState();
+                    showConnectionPage(true);
+                }
+            });
+        }
+
+        @Override
+        public void onSessionCreated(com.bluelink.net.BluetoothSession session) {
+            currentSession = session;
+            if (aiChatPanel != null)
+                aiChatPanel.setSession(session);
+            if (mainChatPanel != null)
+                mainChatPanel.setSession(session);
+            System.out.println("[UI] 会话已建立，保存 session");
+        }
+
+        @Override
+        public void onError(String message) {
+            SwingUtilities.invokeLater(() -> {
+                System.err.println("错误: " + message);
+                trayManager.showNotification("错误", message);
+                if (connectionPanel != null && connectionPanel.isVisible()) {
+                    connectionPanel.onConnectionFailed(message);
+                }
+            });
+        }
+    }
+
+    // --- Settings Dialog ---
     private void showSettingsDialog() {
         JDialog dialog = new JDialog(this, "设置", true);
         dialog.setUndecorated(true);
-        dialog.setSize(520, 480); // Increased width for tabs
+        dialog.setSize(520, 550);
         dialog.setLocationRelativeTo(this);
         dialog.setBackground(new Color(0, 0, 0, 0));
 
-        // Temp State for Safe Settings
         java.util.concurrent.atomic.AtomicBoolean tempEnterToSend = new java.util.concurrent.atomic.AtomicBoolean(
                 this.enterToSend);
         java.util.concurrent.atomic.AtomicInteger tempTimeout = new java.util.concurrent.atomic.AtomicInteger(
@@ -667,7 +582,19 @@ public class ModernQQFrame extends JFrame {
         java.util.concurrent.atomic.AtomicReference<String> tempPath = new java.util.concurrent.atomic.AtomicReference<>(
                 com.bluelink.util.AppConfig.getDownloadPath());
 
-        // Save Button (Declared early for access in listeners)
+        java.util.concurrent.atomic.AtomicBoolean tempAiEnabled = new java.util.concurrent.atomic.AtomicBoolean(
+                com.bluelink.util.AppConfig.isAiEnabled());
+        java.util.concurrent.atomic.AtomicBoolean tempAiMultiTurn = new java.util.concurrent.atomic.AtomicBoolean(
+                com.bluelink.util.AppConfig.isAiMultiTurnEnabled());
+        java.util.concurrent.atomic.AtomicInteger tempAiRetention = new java.util.concurrent.atomic.AtomicInteger(
+                com.bluelink.util.AppConfig.getAiHistoryRetentionDays());
+        java.util.concurrent.atomic.AtomicReference<String> tempAiUrl = new java.util.concurrent.atomic.AtomicReference<>(
+                com.bluelink.util.AppConfig.getAiApiUrl());
+        java.util.concurrent.atomic.AtomicReference<String> tempAiKey = new java.util.concurrent.atomic.AtomicReference<>(
+                com.bluelink.util.AppConfig.getAiApiKey());
+        java.util.concurrent.atomic.AtomicReference<String> tempAiModel = new java.util.concurrent.atomic.AtomicReference<>(
+                com.bluelink.util.AppConfig.getAiModel());
+
         JButton saveBtn = new JButton("保存设置");
         saveBtn.setBackground(UiUtils.COLOR_PRIMARY);
         saveBtn.setForeground(Color.WHITE);
@@ -676,55 +603,115 @@ public class ModernQQFrame extends JFrame {
         saveBtn.setBorderPainted(false);
         saveBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
         saveBtn.setPreferredSize(new Dimension(100, 30));
-        saveBtn.setEnabled(false); // Initially disabled
+        saveBtn.setEnabled(false);
 
-        // Change Detection Logic
         Runnable checkChanges = () -> {
             boolean changed = (tempEnterToSend.get() != this.enterToSend)
                     || (tempTimeout.get() != com.bluelink.util.AppConfig.getConnectionTimeoutSeconds())
-                    || (!tempPath.get().equals(com.bluelink.util.AppConfig.getDownloadPath()));
+                    || (!tempPath.get().equals(com.bluelink.util.AppConfig.getDownloadPath()))
+                    || (tempAiEnabled.get() != com.bluelink.util.AppConfig.isAiEnabled())
+                    || (tempAiMultiTurn.get() != com.bluelink.util.AppConfig.isAiMultiTurnEnabled())
+                    || (tempAiRetention.get() != com.bluelink.util.AppConfig.getAiHistoryRetentionDays())
+                    || (!tempAiUrl.get().equals(com.bluelink.util.AppConfig.getAiApiUrl()))
+                    || (!tempAiKey.get().equals(com.bluelink.util.AppConfig.getAiApiKey()))
+                    || (!tempAiModel.get().equals(com.bluelink.util.AppConfig.getAiModel()));
 
             saveBtn.setEnabled(changed);
-            if (changed) {
-                saveBtn.setText("保存设置*");
-                saveBtn.setBackground(UiUtils.COLOR_PRIMARY);
-            } else {
-                saveBtn.setText("保存设置");
-                saveBtn.setBackground(new Color(180, 190, 200)); // Disabled look color
-            }
         };
-        // Initial check to set button state (should be disabled)
         checkChanges.run();
 
-        // Close Logic
         Runnable closeAction = () -> {
-            boolean changed = saveBtn.isEnabled();
-            if (changed) {
-                int opt = JOptionPane.showConfirmDialog(dialog, "设置未保存，确定退出吗？", "未保存退出", JOptionPane.YES_NO_OPTION,
-                        JOptionPane.WARNING_MESSAGE);
-                if (opt == JOptionPane.YES_OPTION) {
+            if (saveBtn.isEnabled()) {
+                int opt = JOptionPane.showConfirmDialog(dialog, "设置未保存，确定退出吗？");
+                if (opt == JOptionPane.YES_OPTION)
                     dialog.dispose();
-                }
-            } else {
+            } else
                 dialog.dispose();
-            }
         };
 
-        // Save Logic
         saveBtn.addActionListener(e -> {
+            boolean wasMultiTurn = com.bluelink.util.AppConfig.isAiMultiTurnEnabled();
+            boolean isMultiTurn = tempAiMultiTurn.get();
+
             this.enterToSend = tempEnterToSend.get();
             com.bluelink.util.AppConfig.setEnterToSend(this.enterToSend);
             com.bluelink.util.AppConfig.setConnectionTimeout(tempTimeout.get());
             com.bluelink.util.AppConfig.setDownloadPath(tempPath.get());
+            com.bluelink.util.AppConfig.setAiEnabled(tempAiEnabled.get());
+            com.bluelink.util.AppConfig.setAiMultiTurnEnabled(isMultiTurn);
+            com.bluelink.util.AppConfig.setAiHistoryRetentionDays(tempAiRetention.get());
+            com.bluelink.util.AppConfig.setAiApiUrl(tempAiUrl.get());
+            com.bluelink.util.AppConfig.setAiApiKey(tempAiKey.get());
+            com.bluelink.util.AppConfig.setAiModel(tempAiModel.get());
 
-            // Update Main UI based on changes if needed
-            inputArea.setToolTipText(this.enterToSend ? "模式: Enter 发送" : "模式: Ctrl+Enter 发送");
+            // Handle Redis lifecycle with UI feedback
+            if (aiService != null) {
+                if (isMultiTurn && !wasMultiTurn) {
+                    // Starting Redis
+                    JDialog loading = new JDialog(dialog, "请稍候", true);
+                    loading.setUndecorated(true);
+                    JPanel p = new JPanel(new MigLayout("insets 20", "[center]", "[][center]"));
+                    p.setBorder(BorderFactory.createLineBorder(Color.LIGHT_GRAY));
+                    p.add(new JLabel("正在启动多轮对话引擎..."), "wrap");
+                    JProgressBar bar = new JProgressBar();
+                    bar.setIndeterminate(true);
+                    p.add(bar);
+                    loading.setContentPane(p);
+                    loading.pack();
+                    loading.setLocationRelativeTo(dialog);
+
+                    new Thread(() -> {
+                        aiService.startRedis();
+                        SwingUtilities.invokeLater(loading::dispose);
+                    }).start();
+
+                    loading.setVisible(true);
+                } else if (!isMultiTurn && wasMultiTurn) {
+                    // Stopping Redis
+                    new Thread(() -> aiService.stopRedis()).start();
+                }
+            }
+
+            // Refresh sidebar to reflect AI toggle
+            refreshSidebar();
+            if (!tempAiEnabled.get()) {
+                switchContent(CARD_MAIN_CHAT);
+            }
+
+            // 通知 AI 面板更新状态 (例如启用/禁用下拉框)
+            if (aiChatPanel != null) {
+                aiChatPanel.onMultiTurnToggled(isMultiTurn);
+            }
 
             dialog.dispose();
         });
 
+        // Use helper to keep main readable
+        JPanel mainPanel = createSettingsContent(dialog, closeAction, saveBtn, tempEnterToSend, tempTimeout, tempPath,
+                tempAiEnabled, tempAiMultiTurn, tempAiRetention, tempAiUrl, tempAiKey, tempAiModel, checkChanges);
+
+        dialog.setContentPane(mainPanel);
+        dialog.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
+        dialog.addWindowListener(new java.awt.event.WindowAdapter() {
+            public void windowClosing(java.awt.event.WindowEvent e) {
+                closeAction.run();
+            }
+        });
+        dialog.setVisible(true);
+    }
+
+    private JPanel createSettingsContent(JDialog dialog, Runnable closeAction, JButton saveBtn,
+            java.util.concurrent.atomic.AtomicBoolean tempEnterToSend,
+            java.util.concurrent.atomic.AtomicInteger tempTimeout,
+            java.util.concurrent.atomic.AtomicReference<String> tempPath,
+            java.util.concurrent.atomic.AtomicBoolean tempAiEnabled,
+            java.util.concurrent.atomic.AtomicBoolean tempAiMultiTurn,
+            java.util.concurrent.atomic.AtomicInteger tempAiRetention,
+            java.util.concurrent.atomic.AtomicReference<String> tempAiUrl,
+            java.util.concurrent.atomic.AtomicReference<String> tempAiKey,
+            java.util.concurrent.atomic.AtomicReference<String> tempAiModel,
+            Runnable checkChanges) {
         JPanel mainPanel = new JPanel() {
-            @Override
             protected void paintComponent(Graphics g) {
                 Graphics2D g2 = (Graphics2D) g;
                 UiUtils.enableAntialiasing(g2);
@@ -748,49 +735,24 @@ public class ModernQQFrame extends JFrame {
                 g2.drawRoundRect(shadowSize, shadowSize, w, h, arc, arc);
             }
         };
-        // Use BorderLayout for main structure: Title (North), ConnectCard, Tabs
-        // (Center), Footer (South)
-        // Equalize gap: Title-Card (10px), Card-Tabs (10px)
         mainPanel.setLayout(new MigLayout("insets 20 25 10 25, fill, wrap 1", "[grow]", "[]10[]10[grow]0[]"));
-        mainPanel.setOpaque(false);
 
-        // --- 1. 自定义标题栏 (含拖动和关闭) ---
+        // Title
         JPanel titlePanel = new JPanel(new MigLayout("insets 0, fillx", "[grow][]"));
         titlePanel.setOpaque(false);
-
-        JLabel titleLabel = new JLabel("应用设置");
-        titleLabel.setFont(UiUtils.FONT_BOLD.deriveFont(18f));
-
-        JButton closeBtn = new JButton("×");
-        closeBtn.setFont(new Font("Arial", Font.BOLD, 20));
-        closeBtn.setForeground(Color.GRAY);
-        closeBtn.setBorder(null);
-        closeBtn.setContentAreaFilled(false);
-        closeBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        closeBtn.addActionListener(e -> closeAction.run()); // Use Safe Close
-
-        titlePanel.add(titleLabel);
-        titlePanel.add(closeBtn);
+        JLabel title = new JLabel("设置");
+        title.setFont(UiUtils.FONT_BOLD.deriveFont(18f));
+        JButton close = new JButton("x");
+        close.setBorder(null);
+        close.setContentAreaFilled(false);
+        close.setFont(UiUtils.FONT_BOLD.deriveFont(16f));
+        close.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        close.addActionListener(e -> closeAction.run());
+        titlePanel.add(title);
+        titlePanel.add(close);
         mainPanel.add(titlePanel, "growx, gapbottom 0");
 
-        // 窗口拖动逻辑
-        java.awt.event.MouseAdapter dragListener = new java.awt.event.MouseAdapter() {
-            int pX, pY;
-
-            public void mousePressed(java.awt.event.MouseEvent e) {
-                pX = e.getX();
-                pY = e.getY();
-            }
-
-            public void mouseDragged(java.awt.event.MouseEvent e) {
-                dialog.setLocation(dialog.getLocation().x + e.getX() - pX, dialog.getLocation().y + e.getY() - pY);
-            }
-        };
-        mainPanel.addMouseListener(dragListener);
-        mainPanel.addMouseMotionListener(dragListener);
-
-        // --- 2. 顶部：本机信息 ---
-        // 将本机码信息放在 Tabs 上方，作为公共信息展示
+        // --- 本机码卡片 ---
         JPanel codeCard = new JPanel(new MigLayout("insets 10, fillx, wrap 1", "[center]"));
         codeCard.setBackground(new Color(248, 250, 255));
         codeCard.setBorder(BorderFactory.createLineBorder(new Color(220, 230, 240), 1, true));
@@ -834,206 +796,234 @@ public class ModernQQFrame extends JFrame {
         codeCard.add(codeRow);
         mainPanel.add(codeCard, "growx, h 65!, gapbottom 0");
 
-        // --- 3. 垂直 Tabs 内容区 ---
-        JTabbedPane tabbedPane = new JTabbedPane(JTabbedPane.LEFT);
-        tabbedPane.setFocusable(false);
-        tabbedPane.setFont(UiUtils.FONT_NORMAL.deriveFont(14f));
-        tabbedPane.setBackground(Color.WHITE);
-        tabbedPane.setOpaque(true);
+        // Tabs
+        JTabbedPane tabs = new JTabbedPane(JTabbedPane.LEFT);
+        tabs.setFocusable(false);
+        tabs.setFont(UiUtils.FONT_NORMAL.deriveFont(14f));
+        tabs.setBackground(Color.WHITE);
+        tabs.setOpaque(true);
 
-        // SVG Icons
-        FlatSVGIcon iconSend = new FlatSVGIcon("com/bluelink/ui/icons/send.svg", 16, 16);
-        FlatSVGIcon iconSettings = new FlatSVGIcon("com/bluelink/ui/icons/settings.svg", 16, 16);
-        FlatSVGIcon iconConnect = new FlatSVGIcon("com/bluelink/ui/icons/connect.svg", 16, 16);
-
-        // Color filter for selected state (Blue)
-        FlatSVGIcon.ColorFilter blueFilter = new FlatSVGIcon.ColorFilter(color -> UiUtils.COLOR_PRIMARY);
-
-        tabbedPane.addChangeListener(e -> {
-            int selected = tabbedPane.getSelectedIndex();
-            for (int i = 0; i < tabbedPane.getTabCount(); i++) {
-                String title = tabbedPane.getTitleAt(i);
-                if (title.startsWith("<html>")) {
-                    title = title.replaceAll("<html>.*<font color=.*>(.*)</font>.*</html>", "$1");
-                }
-
-                // Reset icon color
-                Icon currentIcon = tabbedPane.getIconAt(i);
-                if (currentIcon instanceof FlatSVGIcon) {
-                    ((FlatSVGIcon) currentIcon).setColorFilter(null);
-                }
-
-                if (i == selected) {
-                    tabbedPane.setTitleAt(i, "<html><font color='#0099FF'>" + title + "</font></html>");
-                    if (currentIcon instanceof FlatSVGIcon) {
-                        ((FlatSVGIcon) currentIcon).setColorFilter(blueFilter);
-                    }
-                } else {
-                    tabbedPane.setTitleAt(i, title);
-                }
-            }
-            tabbedPane.repaint(); // Ensure icon repaint
-        });
-
-        // Tab 1: 发送设置
-        JPanel settingPanel = new JPanel(new MigLayout("insets 15, fillx, wrap 1", "[grow]"));
-        settingPanel.setOpaque(false);
-
-        JLabel setTip = new JLabel("发送快捷键设置");
-        setTip.setFont(UiUtils.FONT_BOLD);
-        settingPanel.add(setTip, "gaptop 5, gapbottom 10");
-
-        JRadioButton rb1 = new JRadioButton("Enter 发送", tempEnterToSend.get());
-        JRadioButton rb2 = new JRadioButton("Ctrl + Enter 发送", !tempEnterToSend.get());
-
-        Font radioFont = UiUtils.FONT_NORMAL.deriveFont(14f);
-        rb1.setFont(radioFont);
-        rb2.setFont(radioFont);
-        rb1.setOpaque(false);
-        rb2.setOpaque(false);
-        rb1.setFocusPainted(false);
-        rb2.setFocusPainted(false);
+        // Tab 1: Send
+        JPanel sendPanel = new JPanel(new MigLayout("insets 10, fillx, wrap 1"));
+        sendPanel.setOpaque(false);
+        JRadioButton r1 = new JRadioButton("Enter 发送", tempEnterToSend.get());
+        JRadioButton r2 = new JRadioButton("Ctrl+Enter 发送", !tempEnterToSend.get());
+        r1.setFont(UiUtils.FONT_NORMAL);
+        r2.setFont(UiUtils.FONT_NORMAL);
+        r1.setOpaque(false);
+        r2.setOpaque(false);
 
         ButtonGroup bg = new ButtonGroup();
-        bg.add(rb1);
-        bg.add(rb2);
-
-        rb1.addActionListener(e -> {
+        bg.add(r1);
+        bg.add(r2);
+        r1.addActionListener(e -> {
             tempEnterToSend.set(true);
             checkChanges.run();
         });
-        rb2.addActionListener(e -> {
+        r2.addActionListener(e -> {
             tempEnterToSend.set(false);
             checkChanges.run();
         });
+        sendPanel.add(r1);
+        sendPanel.add(r2);
+        tabs.addTab("发送", sendPanel);
 
-        settingPanel.add(rb1);
-        settingPanel.add(rb2, "gaptop 5");
+        // Tab 2: General (Timeout, Path)
+        JPanel genPanel = new JPanel(new MigLayout("insets 10, fillx, wrap 1"));
+        genPanel.setOpaque(false);
 
-        // Tab 2: 通用设置
-        JPanel generalPanel = new JPanel(new MigLayout("insets 15, fillx, wrap 1", "[grow]"));
-        generalPanel.setOpaque(false);
-
-        JLabel genTip = new JLabel("通用功能设置");
-        genTip.setFont(UiUtils.FONT_BOLD);
-        generalPanel.add(genTip, "gaptop 5, gapbottom 10");
-
-        // 连接超时
-        JPanel timeoutPanel = new JPanel(new MigLayout("insets 0, fillx", "[][grow]"));
-        timeoutPanel.setOpaque(false);
-        JLabel timeoutLabel = new JLabel("连接超时 (秒):");
-        JTextField timeoutField = new JTextField(String.valueOf(tempTimeout.get()));
-
-        timeoutPanel.add(timeoutLabel);
-        timeoutPanel.add(timeoutField, "width 60!");
-
-        // Listener for Timeout Field
-        javax.swing.event.DocumentListener timeoutListener = new javax.swing.event.DocumentListener() {
-            public void insertUpdate(javax.swing.event.DocumentEvent e) {
-                update();
+        // Timeout
+        genPanel.add(new JLabel("连接超时 (秒):"), "split 2");
+        JTextField timeoutF = new JTextField(String.valueOf(tempTimeout.get()), 5);
+        timeoutF.getDocument().addDocumentListener(getSimpleListener(() -> {
+            try {
+                tempTimeout.set(Integer.parseInt(timeoutF.getText().trim()));
+            } catch (Exception e) {
             }
+            checkChanges.run();
+        }));
+        genPanel.add(timeoutF, "wrap");
 
-            public void removeUpdate(javax.swing.event.DocumentEvent e) {
-                update();
-            }
-
-            public void changedUpdate(javax.swing.event.DocumentEvent e) {
-                update();
-            }
-
-            void update() {
-                try {
-                    String txt = timeoutField.getText().trim();
-                    if (!txt.isEmpty()) {
-                        int val = Integer.parseInt(txt);
-                        tempTimeout.set(val);
-                    }
-                } catch (NumberFormatException ex) {
-                }
-                checkChanges.run();
-            }
-        };
-        timeoutField.getDocument().addDocumentListener(timeoutListener);
-
-        generalPanel.add(timeoutPanel);
-
-        // 下载路径
-        JLabel pathLabel = new JLabel("文件保存位置:");
-        generalPanel.add(pathLabel, "gaptop 15");
-
+        // Path
+        genPanel.add(new JLabel("文件保存位置:"), "wrap");
         JPanel pathRow = new JPanel(new MigLayout("insets 0, fillx", "[grow][]"));
         pathRow.setOpaque(false);
-        JTextField pathField = new JTextField(tempPath.get());
-        pathField.setEditable(false);
-        JButton changePathBtn = new JButton("浏览...");
-        changePathBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        JTextField pathF = new JTextField(tempPath.get());
+        pathF.setEditable(false);
+        JButton changePath = new JButton("浏览...");
+        changePath.addActionListener(e -> {
+            JFileChooser chooser = new JFileChooser();
+            chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+            if (chooser.showOpenDialog(dialog) == JFileChooser.APPROVE_OPTION) {
+                String p = chooser.getSelectedFile().getAbsolutePath();
+                pathF.setText(p);
+                tempPath.set(p);
+                checkChanges.run();
+            }
+        });
+        pathRow.add(pathF, "growx");
+        pathRow.add(changePath);
+        genPanel.add(pathRow, "growx");
 
-        changePathBtn.addActionListener(e -> {
+        tabs.addTab("通用", genPanel);
+
+        // Tab 3: AI
+        JPanel aiPanel = new JPanel(new MigLayout("insets 10, fillx, wrap 1"));
+        aiPanel.setOpaque(false);
+
+        JPanel switchPanel = new JPanel(new MigLayout("insets 0", "[]10[]"));
+        switchPanel.setOpaque(false);
+
+        SwitchButton enableAiSwitch = new SwitchButton(tempAiEnabled.get());
+        enableAiSwitch.addActionListener(e -> {
+            tempAiEnabled.set(enableAiSwitch.isSelected());
+            checkChanges.run();
+        });
+
+        JLabel switchLabel = new JLabel("启用 AI 功能");
+        switchLabel.setFont(UiUtils.FONT_NORMAL);
+
+        switchPanel.add(enableAiSwitch);
+        switchPanel.add(switchLabel);
+
+        aiPanel.add(switchPanel, "wrap");
+
+        JPanel multiTurnPanel = new JPanel(new MigLayout("insets 0", "[]10[]"));
+        multiTurnPanel.setOpaque(false);
+
+        // Retention Days
+        JPanel retentionPanel = new JPanel(new MigLayout("insets 0", "[][grow]"));
+        retentionPanel.setOpaque(false);
+        retentionPanel.add(new JLabel("历史记录保留 (天):"));
+        // 使用 JFormattedTextField 限制只能输入数字
+        javax.swing.text.NumberFormatter numberFormatter = new javax.swing.text.NumberFormatter(
+                java.text.NumberFormat.getIntegerInstance());
+        numberFormatter.setValueClass(Integer.class);
+        numberFormatter.setAllowsInvalid(true); // 允许暂时输入非法字符（如空），以便用户清空重输
+        numberFormatter.setMinimum(1); // 最小 1 天
+        numberFormatter.setMaximum(365); // 最大 365 天
+
+        JFormattedTextField retentionF = new JFormattedTextField(numberFormatter);
+        retentionF.setValue(tempAiRetention.get());
+        retentionF.setColumns(5);
+
+        // 关键修复：设置 FocusLostBehavior 为 PERSIST，允许用户暂时清空内容进行编辑
+        // 默认是 COMMIT_OR_REVERT，如果清空（非法值），焦点丢失时会回滚。
+        // 但如果在输入过程中（焦点未丢失）内容为空，getValue() 可能会抛异常或返回 null。
+        retentionF.setFocusLostBehavior(JFormattedTextField.PERSIST);
+
+        retentionF.getDocument().addDocumentListener(getSimpleListener(() -> {
             try {
-                javax.swing.LookAndFeel currentLaf = javax.swing.UIManager.getLookAndFeel();
-                javax.swing.UIManager.setLookAndFeel(new javax.swing.plaf.metal.MetalLookAndFeel());
-
-                JFileChooser chooser = new JFileChooser();
-                chooser.putClientProperty("FileChooser.useShellFolder", Boolean.FALSE);
-                chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-                chooser.setDialogTitle("选择文件保存位置");
-
-                File currentDir = new File(pathField.getText());
-                if (!currentDir.exists())
-                    currentDir.mkdirs();
-                if (!currentDir.exists())
-                    currentDir = new File(System.getProperty("user.home"));
-                chooser.setCurrentDirectory(currentDir);
-
-                int result = chooser.showOpenDialog(dialog);
-                javax.swing.UIManager.setLookAndFeel(currentLaf);
-
-                if (result == JFileChooser.APPROVE_OPTION) {
-                    String path = chooser.getSelectedFile().getAbsolutePath();
-                    pathField.setText(path);
-                    tempPath.set(path); // Update temp
-                    checkChanges.run();
+                // 如果内容为空，暂时不 commit，也不更新 tempAiRetention
+                if (retentionF.getText().trim().isEmpty()) {
+                    return;
                 }
-            } catch (Throwable t) {
-                t.printStackTrace();
-                String newPath = javax.swing.JOptionPane.showInputDialog(dialog, "请输入保存路径:", pathField.getText());
-                if (newPath != null && !newPath.trim().isEmpty()) {
-                    File dir = new File(newPath.trim());
-                    if (!dir.exists())
-                        dir.mkdirs();
-                    pathField.setText(dir.getAbsolutePath());
-                    tempPath.set(dir.getAbsolutePath()); // Update temp
-                    checkChanges.run();
+
+                // 尝试 commit
+                retentionF.commitEdit();
+                Object val = retentionF.getValue();
+                if (val instanceof Number) {
+                    int days = ((Number) val).intValue();
+                    if (days != tempAiRetention.get()) {
+                        tempAiRetention.set(days);
+                        checkChanges.run();
+                    }
                 }
+            } catch (Exception e) {
+                // ignore invalid
+            }
+        }));
+
+        // 同时也监听 PropertyChange
+        retentionF.addPropertyChangeListener("value", evt -> {
+            try {
+                Object val = retentionF.getValue();
+                if (val instanceof Number) {
+                    int days = ((Number) val).intValue();
+                    if (days != tempAiRetention.get()) {
+                        tempAiRetention.set(days);
+                        checkChanges.run();
+                    }
+                }
+            } catch (Exception e) {
             }
         });
 
-        pathRow.add(pathField, "growx");
-        pathRow.add(changePathBtn);
-        generalPanel.add(pathRow, "gaptop 5");
+        retentionPanel.add(retentionF);
 
-        // Tab 3: 连接设备
-        JPanel connectPanel = new JPanel(new MigLayout("insets 15, fillx, wrap 1", "[center]"));
-        connectPanel.setOpaque(false);
+        // 初始可见性
+        retentionPanel.setVisible(tempAiMultiTurn.get());
+        aiPanel.add(retentionPanel, "wrap");
+
+        SwitchButton multiTurnSwitch = new SwitchButton(tempAiMultiTurn.get());
+        multiTurnSwitch.addActionListener(e -> {
+            boolean selected = multiTurnSwitch.isSelected();
+            tempAiMultiTurn.set(selected);
+            retentionPanel.setVisible(selected);
+
+            // 立即触发 Redis 启停逻辑 (如果需要)
+            // 注意：这只是为了演示，真正的启停应该在点击"保存设置"后触发
+            // 但用户要求 "为了用户体验可以有一个等待动画"
+            // 这意味着我们可能需要在点击保存时，如果检测到 multiTurn 从 false -> true，则显示动画
+
+            checkChanges.run();
+        });
+
+        JLabel multiTurnLabel = new JLabel("启用多轮对话");
+        multiTurnLabel.setFont(UiUtils.FONT_NORMAL);
+
+        multiTurnPanel.add(multiTurnSwitch);
+        multiTurnPanel.add(multiTurnLabel);
+
+        aiPanel.add(multiTurnPanel, "wrap", 1);
+
+        aiPanel.add(new JLabel("API URL:"));
+        JTextField urlF = new JTextField(tempAiUrl.get());
+        urlF.getDocument().addDocumentListener(getSimpleListener(() -> {
+            tempAiUrl.set(urlF.getText());
+            checkChanges.run();
+        }));
+        aiPanel.add(urlF, "growx");
+
+        aiPanel.add(new JLabel("API Key:"));
+        JTextField keyF = new JTextField(tempAiKey.get());
+        keyF.getDocument().addDocumentListener(getSimpleListener(() -> {
+            tempAiKey.set(keyF.getText());
+            checkChanges.run();
+        }));
+        aiPanel.add(keyF, "growx");
+
+        aiPanel.add(new JLabel("Model Name:"));
+        JTextField modelF = new JTextField(tempAiModel.get());
+        modelF.getDocument().addDocumentListener(getSimpleListener(() -> {
+            tempAiModel.set(modelF.getText());
+            checkChanges.run();
+        }));
+        aiPanel.add(modelF, "growx");
+
+        tabs.addTab("AI", aiPanel);
+
+        // Tab 4: Connect
+        JPanel connPanel = new JPanel(new MigLayout("insets 15, fillx, wrap 1", "[grow]"));
+        connPanel.setOpaque(false);
 
         JLabel connTip = new JLabel("添加新设备连接");
         connTip.setFont(UiUtils.FONT_BOLD);
-        connectPanel.add(connTip, "align left, gaptop 5, gapbottom 20");
+        connPanel.add(connTip, "align left, gaptop 5, gapbottom 20");
 
-        JButton gotoConnectBtn = new JButton("前往连接页面");
-        gotoConnectBtn.setBackground(UiUtils.COLOR_PRIMARY);
-        gotoConnectBtn.setForeground(Color.WHITE);
-        gotoConnectBtn.setFont(UiUtils.FONT_NORMAL);
-        gotoConnectBtn.setFocusPainted(false);
-        gotoConnectBtn.setBorderPainted(false);
-        gotoConnectBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        gotoConnectBtn.setPreferredSize(new Dimension(180, 40));
-
-        gotoConnectBtn.addActionListener(e -> {
+        JButton goConn = new JButton("前往连接页面");
+        goConn.setBackground(UiUtils.COLOR_PRIMARY);
+        goConn.setForeground(Color.WHITE);
+        goConn.setFont(UiUtils.FONT_NORMAL);
+        goConn.setFocusPainted(false);
+        goConn.setBorderPainted(false);
+        goConn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        goConn.setPreferredSize(new Dimension(180, 40));
+        goConn.addActionListener(e -> {
             // Check changes before leaving
             if (saveBtn.isEnabled()) {
-                int opt = JOptionPane.showConfirmDialog(dialog, "设置未保存，确定离开吗？", "未保存警告", JOptionPane.YES_NO_OPTION,
-                        JOptionPane.WARNING_MESSAGE);
+                int opt = JOptionPane.showConfirmDialog(dialog, "设置未保存，确定离开吗？", "未保存警告",
+                        JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
                 if (opt != JOptionPane.YES_OPTION) {
                     return;
                 }
@@ -1041,81 +1031,93 @@ public class ModernQQFrame extends JFrame {
             dialog.dispose();
             showConnectionPage(true);
         });
+        connPanel.add(goConn, "align center, gaptop 10");
+        tabs.addTab("连接", connPanel);
 
-        connectPanel.add(gotoConnectBtn, "gaptop 20");
-
-        // Tab 4: 关于软件
-        JPanel aboutPanel = new JPanel(new MigLayout("insets 15, fillx, wrap 1", "[grow]"));
+        // Tab 5: About
+        JPanel aboutPanel = new JPanel(new MigLayout("insets 10, fillx, wrap 1"));
         aboutPanel.setOpaque(false);
+        aboutPanel.add(new JLabel("<html><b>BlueLink</b> v2.0.1-DEV</html>"), "wrap");
+        aboutPanel.add(new JLabel("作者: ZPC"), "wrap");
+        aboutPanel.add(new JLabel("Email: privacyporton@proton.me"), "wrap");
 
-        JLabel aboutTitle = new JLabel("关于 BlueLink");
-        aboutTitle.setFont(UiUtils.FONT_BOLD.deriveFont(16f));
-        aboutPanel.add(aboutTitle, "gapbottom 10");
-
-        // Author
-        JPanel authorRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        authorRow.setOpaque(false);
-        authorRow.add(new JLabel("作者: "));
-        JLabel authorLabel = new JLabel("ZPC");
-        authorLabel.setFont(UiUtils.FONT_BOLD);
-        authorRow.add(authorLabel);
-        aboutPanel.add(authorRow, "gaptop 5");
-
-        // Email
-        JPanel emailRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        emailRow.setOpaque(false);
-        emailRow.add(new JLabel("联系邮箱: "));
-        JTextField emailField = new JTextField("privacyporton@proton.me");
-        emailField.setEditable(false);
-        emailField.setBorder(null);
-        emailField.setOpaque(false);
-        emailField.setFont(UiUtils.FONT_NORMAL);
-        emailRow.add(emailField);
-        aboutPanel.add(emailRow, "gaptop 5");
-
-        // GitHub
-        JPanel githubRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        githubRow.setOpaque(false);
-        githubRow.add(new JLabel("开源地址: "));
-        JLabel githubLink = new JLabel("<html><a href=''>https://github.com/123zpc/BlueLink</a></html>");
-        githubLink.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        githubLink.addMouseListener(new java.awt.event.MouseAdapter() {
-            @Override
+        JLabel gitLink = new JLabel("<html><a href='#'>https://github.com/123zpc/BlueLink</a></html>");
+        gitLink.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        gitLink.addMouseListener(new java.awt.event.MouseAdapter() {
             public void mouseClicked(java.awt.event.MouseEvent e) {
                 try {
-                    java.awt.Desktop.getDesktop().browse(new java.net.URI("https://github.com/123zpc/BlueLink"));
+                    Desktop.getDesktop().browse(new java.net.URI("https://github.com/123zpc/BlueLink"));
                 } catch (Exception ex) {
-                    ex.printStackTrace();
                 }
             }
         });
-        githubRow.add(githubLink);
-        aboutPanel.add(githubRow, "gaptop 5");
+        aboutPanel.add(gitLink);
 
-        // Version/Date
-        aboutPanel.add(new JLabel("版本: 1.0.0 (2026-01-25)"), "gaptop 20");
+        tabs.addTab("关于", aboutPanel);
 
-        // 添加 Tabs
+        // SVG 图标和颜色切换
         try {
+            FlatSVGIcon iconSend = new FlatSVGIcon("com/bluelink/ui/icons/send.svg", 16, 16);
+            FlatSVGIcon iconSettings = new FlatSVGIcon("com/bluelink/ui/icons/settings.svg", 16, 16);
+            FlatSVGIcon iconAi = new FlatSVGIcon("com/bluelink/ui/icons/ai.svg", 16, 16);
+            FlatSVGIcon iconConnect = new FlatSVGIcon("com/bluelink/ui/icons/connect.svg", 16, 16);
             FlatSVGIcon iconAbout = new FlatSVGIcon("com/bluelink/ui/icons/about.svg", 16, 16);
 
-            tabbedPane.addTab("发送", iconSend, settingPanel);
-            tabbedPane.addTab("通用", iconSettings, generalPanel);
-            tabbedPane.addTab("连接", iconConnect, connectPanel);
-            tabbedPane.addTab("关于", iconAbout, aboutPanel);
+            // 颜色过滤器
+            FlatSVGIcon.ColorFilter blueFilter = new FlatSVGIcon.ColorFilter(color -> UiUtils.COLOR_PRIMARY);
+
+            // 重新设置带图标的 Tab
+            tabs.setIconAt(0, iconSend);
+            tabs.setIconAt(1, iconSettings);
+            tabs.setIconAt(2, iconAi);
+            tabs.setIconAt(3, iconConnect);
+            tabs.setIconAt(4, iconAbout);
+
+            // Tab 切换监听器 - 实现颜色变化
+            tabs.addChangeListener(e -> {
+                int selected = tabs.getSelectedIndex();
+                for (int i = 0; i < tabs.getTabCount(); i++) {
+                    String tabTitle = tabs.getTitleAt(i);
+                    // 移除 HTML 标签获取纯文本
+                    String plain = tabTitle.replaceAll("<[^>]*>", "").trim();
+
+                    // 重置图标颜色
+                    Icon currentIcon = tabs.getIconAt(i);
+                    if (currentIcon instanceof FlatSVGIcon) {
+                        ((FlatSVGIcon) currentIcon).setColorFilter(null);
+                    }
+
+                    if (i == selected) {
+                        // 选中：蓝色文本，固定宽度
+                        tabs.setTitleAt(i, "<html><div style='width: 65px; text-align: left; color: #0099FF'>" + plain
+                                + "</div></html>");
+                        if (currentIcon instanceof FlatSVGIcon) {
+                            ((FlatSVGIcon) currentIcon).setColorFilter(blueFilter);
+                        }
+                    } else {
+                        // 未选中：默认颜色，固定宽度
+                        tabs.setTitleAt(i, "<html><div style='width: 65px; text-align: left; color: #000000'>" + plain
+                                + "</div></html>");
+                    }
+                }
+                tabs.repaint();
+            });
+
+            // 强制触发第一个 Tab 的样式
+            if (tabs.getTabCount() > 0) {
+                tabs.setSelectedIndex(-1);
+                tabs.setSelectedIndex(0);
+            }
         } catch (Exception e) {
-            // Fallback if icons fail
-            tabbedPane.addTab("发送", settingPanel);
-            tabbedPane.addTab("通用", generalPanel);
-            tabbedPane.addTab("连接", connectPanel);
-            tabbedPane.addTab("关于", aboutPanel);
+            // 图标加载失败时的降级处理
+            System.err.println("Failed to load SVG icons: " + e.getMessage());
         }
 
-        mainPanel.add(tabbedPane, "grow");
+        mainPanel.add(tabs, "grow");
 
-        // --- 4. 底部操作 ---
-        JPanel bottomPanel = new JPanel(new MigLayout("insets 0, fillx", "[]push[]"));
-        bottomPanel.setOpaque(false);
+        // Bottom
+        JPanel bot = new JPanel(new MigLayout("insets 0, fillx", "[]push[]"));
+        bot.setOpaque(false);
 
         JButton clearBtn = new JButton("清空所有记录");
         clearBtn.setForeground(new Color(220, 60, 60));
@@ -1124,592 +1126,112 @@ public class ModernQQFrame extends JFrame {
         clearBtn.setContentAreaFilled(false);
         clearBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
         clearBtn.addActionListener(e -> {
-            int opt = JOptionPane.showConfirmDialog(dialog, "确定清空？不可恢复。", "确认", JOptionPane.YES_NO_OPTION);
-            if (opt == JOptionPane.YES_OPTION) {
+            if (JOptionPane.showConfirmDialog(dialog, "确定清空所有通过记录吗？", "确认",
+                    JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
                 clearChatHistory();
-                // Check changes before dispose inside clearChatHistory? No, just clear DB/UI.
-                // But user might want to continue settings.
-                // Re-enabling dialog.dispose() in clear button might act as "Cancel" for
-                // settings changes?
-                // Standard behavior: Clear action is independent.
-                // Previous code disposed dialog. I will keep it but warn if settings changed?
-                // "清空" is unrelated to "保存设置". But closing the dialog abandons settings
-                // changes.
-                // Ideally clear history shouldn't close dialog, but if it does, we should
-                // prompt safe close.
-                // Let's assume clear history closes dialog.
-                if (saveBtn.isEnabled()) {
-                    // Unsaved changes will be lost check
-                    // The clear confirmation is already there.
-                    // Let's just run closeAction() after clearing?
-                    // Or just dispose.
-                    // Simple approach: Dispose effectively cancels settings changes.
-                    dialog.dispose();
-                } else {
-                    dialog.dispose();
-                }
             }
         });
 
-        bottomPanel.add(clearBtn); // Left
-        bottomPanel.add(saveBtn); // Right
+        bot.add(clearBtn);
+        bot.add(saveBtn);
+        mainPanel.add(bot, "growx");
 
-        mainPanel.add(bottomPanel, "growx");
-
-        // Force trigger styling for the first tab
-        if (tabbedPane.getTabCount() > 0) {
-            tabbedPane.setSelectedIndex(-1);
-            tabbedPane.setSelectedIndex(0);
-        }
-
-        dialog.setContentPane(mainPanel);
-        dialog.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE); // Safe Close
-        dialog.addWindowListener(new java.awt.event.WindowAdapter() {
-            @Override
-            public void windowClosing(java.awt.event.WindowEvent e) {
-                closeAction.run();
-            }
-        });
-
-        dialog.setVisible(true);
+        return mainPanel;
     }
 
-    /**
-     * 清空聊天记录
-     */
     private void clearChatHistory() {
-        // 清除 UI
-        chatArea.removeAll();
-        chatArea.revalidate();
-        chatArea.repaint();
-
-        // 清除数据库
         com.bluelink.db.TransferDao.clearAll();
+        if (mainChatPanel != null)
+            mainChatPanel.clearChat();
+        if (aiChatPanel != null)
+            aiChatPanel.clearChat();
     }
 
-    private void createContentPanel() {
-        // 右侧布局: Header (Top), Chat (Center), Input (Bottom)
-        contentPanel = new JPanel(
-                new MigLayout("insets 0, fill, wrap 1", "[grow, fill]", "[40px!, fill][grow, fill][150px!, fill]"));
-        contentPanel.setBackground(Color.WHITE);
-
-        // 2.1 Header
-        JPanel headerPanel = new JPanel(new MigLayout("insets 0 20 0 20, fill"));
-        headerPanel.setBackground(new Color(245, 245, 245));
-        headerPanel.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, new Color(230, 230, 230)));
-
-        headerLabel = new JLabel("未连接");
-        headerLabel.setFont(UiUtils.FONT_BOLD);
-        headerPanel.add(headerLabel);
-
-        contentPanel.add(headerPanel, "cell 0 0"); // Top
-
-        // 2.2 Chat Area with LayeredPane
-        // 使用 LayeredPane 实现悬浮按钮
-        layeredChatPane = new JLayeredPane();
-        layeredChatPane.setLayout(null); // 绝对布局用于 LayeredPane
-
-        chatArea = new JPanel(new MigLayout("insets 10, fillx, wrap 1", "[grow, fill]", "[]"));
-        chatArea.setBackground(Color.WHITE);
-
-        chatScrollPane = new JScrollPane(chatArea);
-        chatScrollPane.setBorder(null);
-        chatScrollPane.getVerticalScrollBar().setUnitIncrement(16);
-        chatScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-
-        // 添加滚动监听
-        chatScrollPane.getVerticalScrollBar().addAdjustmentListener(e -> {
-            if (e.getValueIsAdjusting())
-                return;
-            checkScrollPosition();
-        });
-
-        // 悬浮按钮 "回到底部"
-        backToBottomBtn = new JButton("↓ 新消息");
-        backToBottomBtn.setFont(UiUtils.FONT_NORMAL.deriveFont(12f));
-        backToBottomBtn.setBackground(new Color(240, 248, 255));
-        backToBottomBtn.setForeground(UiUtils.COLOR_PRIMARY);
-        backToBottomBtn.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(200, 220, 240), 1, true),
-                BorderFactory.createEmptyBorder(5, 10, 5, 10)));
-        backToBottomBtn.setFocusPainted(false);
-        backToBottomBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        backToBottomBtn.setVisible(false);
-        backToBottomBtn.addActionListener(e -> scrollToBottom());
-
-        // 布局 LayeredPane
-        // 优化：使用自定义 LayoutManager 替代 ComponentListener，解决缩放迟缓问题
-        layeredChatPane.setLayout(new LayoutManager() {
-            @Override
-            public void addLayoutComponent(String name, Component comp) {}
-            @Override
-            public void removeLayoutComponent(Component comp) {}
-            @Override
-            public Dimension preferredLayoutSize(Container parent) { return new Dimension(100, 100); }
-            @Override
-            public Dimension minimumLayoutSize(Container parent) { return new Dimension(0, 0); }
-            @Override
-            public void layoutContainer(Container parent) {
-                int w = parent.getWidth();
-                int h = parent.getHeight();
-                // 1. 聊天列表充满全屏
-                if (chatScrollPane != null) {
-                    chatScrollPane.setBounds(0, 0, w, h);
-                }
-                // 2. 按钮固定在右下角
-                if (backToBottomBtn != null) {
-                    int btnW = 100;
-                    int btnH = 30;
-                    backToBottomBtn.setBounds(w - btnW - 20, h - btnH - 20, btnW, btnH);
-                }
+    private javax.swing.event.DocumentListener getSimpleListener(Runnable r) {
+        return new javax.swing.event.DocumentListener() {
+            public void insertUpdate(javax.swing.event.DocumentEvent e) {
+                r.run();
             }
-        });
 
-        layeredChatPane.add(chatScrollPane, JLayeredPane.DEFAULT_LAYER);
-        layeredChatPane.add(backToBottomBtn, JLayeredPane.PALETTE_LAYER);
-
-        contentPanel.add(layeredChatPane, "cell 0 1, grow"); // Center
-
-        // 2.3 Input Area
-        JPanel inputPanel = new JPanel(new MigLayout("insets 10, fill", "[grow, fill][]", "[grow, fill][]"));
-        inputPanel.setBackground(Color.WHITE);
-        inputPanel.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, new Color(230, 230, 230)));
-
-        // 工具栏 (暂时空白)
-        // inputPanel.add(new JLabel("Tools"), "cell 0 0, span 2");
-
-        // 输入框
-        inputArea = new JTextArea();
-        inputArea.setLineWrap(true);
-        
-        // 优化：拦截粘贴操作 (Ctrl+V)，防止大文本卡死
-        inputArea.getInputMap().put(KeyStroke.getKeyStroke("ctrl V"), "paste-check");
-        inputArea.getActionMap().put("paste-check", new AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                try {
-                    java.awt.datatransfer.Transferable t = Toolkit.getDefaultToolkit().getSystemClipboard().getContents(null);
-                    if (t == null) return;
-
-                    // 1. 处理文件列表粘贴
-                    if (t.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
-                        @SuppressWarnings("unchecked")
-                        java.util.List<File> files = (java.util.List<File>) t.getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor);
-                        for (File file : files) {
-                            performFileSend(file);
-                        }
-                        return; // 拦截默认粘贴
-                    }
-                    
-                    // 2. 处理图片粘贴
-                    if (t.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.imageFlavor)) {
-                        java.awt.Image image = (java.awt.Image) t.getTransferData(java.awt.datatransfer.DataFlavor.imageFlavor);
-                        if (image != null) {
-                            showImagePreviewAndSend(image);
-                        }
-                        return; // 拦截默认粘贴
-                    }
-
-                    // 3. 处理文本粘贴
-                    if (t.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.stringFlavor)) {
-                        String data = (String) t.getTransferData(java.awt.datatransfer.DataFlavor.stringFlavor);
-                        // 阈值：5000字符 (约10KB)，避免 UI 线程阻塞
-                        if (data != null && data.length() > 5000) {
-                            int choice = JOptionPane.showConfirmDialog(
-                                    ModernQQFrame.this,
-                                    "检测到粘贴文本过长 (" + com.bluelink.ui.bubble.BubbleFactory.formatSize(data.length()) + ")，可能导致卡顿。\n建议将其作为【文本文件】发送，是否继续？",
-                                    "大文本智能处理",
-                                    JOptionPane.YES_NO_CANCEL_OPTION,
-                                    JOptionPane.QUESTION_MESSAGE);
-
-                            if (choice == JOptionPane.YES_OPTION) {
-                                // 方案 A: 作为文件发送 (推荐)
-                                try {
-                                    File tempFile = File.createTempFile("text_snippet_" + System.currentTimeMillis(), ".txt");
-                                    try (java.io.FileOutputStream fos = new java.io.FileOutputStream(tempFile)) {
-                                        fos.write(data.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                                    }
-                                    performFileSend(tempFile);
-                                } catch (Exception ex) {
-                                    ex.printStackTrace();
-                                    JOptionPane.showMessageDialog(ModernQQFrame.this, "创建临时文件失败: " + ex.getMessage());
-                                }
-                                return; // 拦截粘贴
-                            } else if (choice == JOptionPane.CANCEL_OPTION || choice == JOptionPane.CLOSED_OPTION) {
-                                return; // 取消操作
-                            }
-                            // 方案 B: 用户坚持粘贴 (NO_OPTION)，放行
-                        }
-                    }
-                } catch (Exception ex) {
-                    ex.printStackTrace();
-                }
-                // 执行默认粘贴
-                inputArea.paste();
+            public void removeUpdate(javax.swing.event.DocumentEvent e) {
+                r.run();
             }
-            
-        });
 
-        inputArea.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
-        inputArea.setFont(UiUtils.FONT_NORMAL.deriveFont(14f));
-        JScrollPane inputScroll = new JScrollPane(inputArea);
-        inputScroll.setBorder(null);
-
-        inputPanel.add(inputScroll, "cell 0 0, span 2");
-
-        // 发送按钮
-        sendButton = new JButton("发送");
-        sendButton.setBackground(UiUtils.COLOR_PRIMARY);
-        sendButton.setForeground(Color.WHITE);
-        sendButton.setFocusPainted(false);
-        sendButton.setBorderPainted(false);
-        sendButton.setFont(UiUtils.FONT_NORMAL);
-
-        // 按钮容器，靠右
-        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        btnPanel.setBackground(Color.WHITE);
-        btnPanel.add(sendButton);
-
-        inputPanel.add(btnPanel, "cell 1 1"); // Bottom Right of input area
-
-        contentPanel.add(inputPanel, "cell 0 2"); // Bottom
+            public void changedUpdate(javax.swing.event.DocumentEvent e) {
+                r.run();
+            }
+        };
     }
 
-    /**
-     * 处理粘贴的图片并发送
-     */
-    private void showImagePreviewAndSend(java.awt.Image image) {
-        // 直接发送，不弹窗
-        try {
-            // 默认保存为 PNG (无损，支持透明)
-            java.awt.image.BufferedImage bufferedImage = toBufferedImage(image);
-            File tempFile = File.createTempFile("pasted_image_" + System.currentTimeMillis(), ".png");
-            javax.imageio.ImageIO.write(bufferedImage, "png", tempFile);
-            performFileSend(tempFile);
-        } catch (Exception e) {
-            e.printStackTrace();
-            javax.swing.JOptionPane.showMessageDialog(this, "图片处理失败: " + e.getMessage());
-        }
-    }
-
-    /**
-     * 静态辅助方法：复制图片到剪贴板
-     */
     public static void copyImageToClipboard(java.awt.Image image) {
         java.awt.datatransfer.Transferable trans = new java.awt.datatransfer.Transferable() {
             public java.awt.datatransfer.DataFlavor[] getTransferDataFlavors() {
-                return new java.awt.datatransfer.DataFlavor[]{ java.awt.datatransfer.DataFlavor.imageFlavor };
+                return new java.awt.datatransfer.DataFlavor[] { java.awt.datatransfer.DataFlavor.imageFlavor };
             }
+
             public boolean isDataFlavorSupported(java.awt.datatransfer.DataFlavor flavor) {
                 return java.awt.datatransfer.DataFlavor.imageFlavor.equals(flavor);
             }
-            public Object getTransferData(java.awt.datatransfer.DataFlavor flavor) throws java.awt.datatransfer.UnsupportedFlavorException {
-                if (!isDataFlavorSupported(flavor)) throw new java.awt.datatransfer.UnsupportedFlavorException(flavor);
+
+            public Object getTransferData(java.awt.datatransfer.DataFlavor flavor)
+                    throws java.awt.datatransfer.UnsupportedFlavorException {
+                if (!isDataFlavorSupported(flavor))
+                    throw new java.awt.datatransfer.UnsupportedFlavorException(flavor);
                 return image;
             }
         };
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(trans, null);
     }
 
-    /**
-     * 辅助方法：Image 转 BufferedImage
-     */
-    private java.awt.image.BufferedImage toBufferedImage(java.awt.Image img) {
-        if (img instanceof java.awt.image.BufferedImage) {
-            return (java.awt.image.BufferedImage) img;
-        }
-        // 创建一个 BufferedImage
-        java.awt.image.BufferedImage bimage = new java.awt.image.BufferedImage(
-                img.getWidth(null), img.getHeight(null), java.awt.image.BufferedImage.TYPE_INT_ARGB);
-        java.awt.Graphics2D bGr = bimage.createGraphics();
-        bGr.drawImage(img, 0, 0, null);
-        bGr.dispose();
-        return bimage;
-    }
+    private void enableDragAndDrop() {
+        java.awt.dnd.DropTargetAdapter dropListener = new java.awt.dnd.DropTargetAdapter() {
+            public void drop(java.awt.dnd.DropTargetDropEvent dtde) {
+                try {
+                    if (dtde.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
+                        dtde.acceptDrop(java.awt.dnd.DnDConstants.ACTION_COPY);
+                        java.awt.datatransfer.Transferable transferable = dtde.getTransferable();
+                        @SuppressWarnings("unchecked")
+                        java.util.List<File> droppedFiles = (java.util.List<File>) transferable
+                                .getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor);
 
-    // --- 消息添加方法 ---
+                        // 必须在此同步告知系统拖放结束，否则系统资源管理器锁死且外部无法继续读取 Transferable
+                        dtde.dropComplete(true);
 
-    public void addMessage(boolean isSender, String text) {
-        // 保存到数据库
-        com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("TEXT", isSender, text, 0);
-        com.bluelink.db.TransferDao.save(item);
-
-        renderTextBubble(isSender, text);
-    }
-
-    public void addFileMessage(boolean isSender, File file) {
-        com.bluelink.db.TransferDao.LogItem item = new com.bluelink.db.TransferDao.LogItem("FILE", isSender,
-                file.getAbsolutePath(), file.length());
-        com.bluelink.db.TransferDao.save(item);
-
-        renderFileBubble(isSender, file);
-    }
-
-    private void checkScrollPosition() {
-        JScrollBar vBar = chatScrollPane.getVerticalScrollBar();
-        int value = vBar.getValue();
-        int extent = vBar.getModel().getExtent();
-        int max = vBar.getMaximum();
-
-        // 1. 判断是否触底
-        // 给 20px 容差
-        if (value + extent >= max - 20) {
-            isUserAtBottom = true;
-            backToBottomBtn.setVisible(false);
-            backToBottomBtn.setText("↓ 回到底部"); // 重置文本
-        } else {
-            isUserAtBottom = false;
-            // 如果不在底部，显示按钮 (这里可以优化为仅当有未读时显示，或者一直显示回到底部)
-            // 简单逻辑：只要不在底部且距离较远，就显示
-            if (max - (value + extent) > 100) {
-                backToBottomBtn.setVisible(true);
-            }
-        }
-
-        // 2. 判断是否触顶 (加载更多)
-        if (value <= 10 && !isLoadingHistory) {
-            loadMoreHistory();
-        }
-    }
-
-    private void scrollToBottom() {
-        // 关键逻辑：先触发布局更新，然后在下一个事件循环中滚到底部
-        // 这能确保在添加大量内容或气泡变大后，滚动条的最大值已更新
-        chatArea.revalidate();
-        SwingUtilities.invokeLater(() -> {
-            JScrollBar vertical = chatScrollPane.getVerticalScrollBar();
-            vertical.setValue(vertical.getMaximum());
-        });
-    }
-
-    private void loadMoreHistory() {
-        if (hasLoadedAllHistory)
-            return;
-
-        isLoadingHistory = true;
-        SwingUtilities.invokeLater(() -> {
-            java.util.List<com.bluelink.db.TransferDao.LogItem> list = com.bluelink.db.TransferDao
-                    .loadHistory(minLoadedId, 25);
-
-            if (list.isEmpty()) {
-                isLoadingHistory = false;
-                if (!hasLoadedAllHistory) {
-                    showNoMoreHistoryTip();
-                    hasLoadedAllHistory = true;
-                }
-                return;
-            } else if (list.size() < 25) {
-                // 如果返回条数少于分页数，说明剩下的也加载完了，标记为已全部加载
-                // 但这次的数据还是要渲染
-                hasLoadedAllHistory = true;
-                // 在渲染完这次的数据后，添加提示
-                SwingUtilities.invokeLater(this::showNoMoreHistoryTip);
-            }
-
-            // 保持视口位置
-            // 记录当前可视的第一条消息，或者简单地记录高度差
-            JScrollBar vBar = chatScrollPane.getVerticalScrollBar();
-            int oldMax = vBar.getMaximum();
-            int oldValue = vBar.getValue();
-
-            // 倒序插入到顶部
-            // 因为 list 是按时间正序的 (旧 -> 新)
-            // 我们要把它插入到 chatArea 的 index 0, 1, 2...
-            // 所以应该倒着遍历 list，才能保持顺序正确？
-            // 比如 list: [msg1, msg2, msg3] (msg1 最旧)
-            // chatArea 现有: [msg4, msg5]
-            // 我们希望: [msg1, msg2, msg3, msg4, msg5]
-            // 所以先插 msg3 到 index 0 -> [msg3, msg4...]
-            // 再插 msg2 到 index 0 -> [msg2, msg3...]
-            // 再插 msg1 到 index 0 -> [msg1, msg2...]
-            for (int i = list.size() - 1; i >= 0; i--) {
-                com.bluelink.db.TransferDao.LogItem item = list.get(i);
-                renderBubbleAtTop(item);
-                if (item.id < minLoadedId) {
-                    minLoadedId = item.id;
-                }
-            }
-
-            chatArea.revalidate(); // 触发布局计算
-
-            // 恢复视口
-            SwingUtilities.invokeLater(() -> {
-                int newMax = vBar.getMaximum();
-                vBar.setValue(oldValue + (newMax - oldMax));
-                isLoadingHistory = false;
-            });
-        });
-    }
-
-    private void renderBubbleAtTop(com.bluelink.db.TransferDao.LogItem item) {
-        JPanel wrapper = createBubbleWrapper(item);
-        chatArea.add(wrapper, "growx, wrap", 0); // index 0
-    }
-
-    private void showNoMoreHistoryTip() {
-        JLabel tip = new JLabel("— 已显示全部历史消息 —");
-        tip.setFont(UiUtils.FONT_NORMAL.deriveFont(10f));
-        tip.setForeground(Color.GRAY);
-        tip.setHorizontalAlignment(SwingConstants.CENTER);
-
-        // 包装一下以适应 MigLayout
-        JPanel wrapper = new JPanel(new MigLayout("insets 5, fillx, alignx center", "[center]", "[]"));
-        wrapper.setOpaque(false);
-        wrapper.add(tip);
-
-        chatArea.add(wrapper, "growx, wrap", 0);
-        chatArea.revalidate();
-    }
-
-    private JPanel createBubbleWrapper(com.bluelink.db.TransferDao.LogItem item) {
-        boolean isSender = item.isSender;
-        JPanel wrapper = new JPanel(new MigLayout("insets 2, fillx, gap 0", "[grow]", "[]"));
-        wrapper.setOpaque(false);
-
-        com.bluelink.ui.bubble.BubblePanel bubble;
-        if ("TEXT".equals(item.type)) {
-            bubble = com.bluelink.ui.bubble.BubbleFactory.createTextBubble(isSender, item.content);
-        } else {
-            bubble = com.bluelink.ui.bubble.BubbleFactory.createFileBubble(isSender, new File(item.content));
-        }
-
-        String constraints = isSender ? "al right, width ::80%" : "al left, width ::80%";
-        wrapper.add(bubble, constraints);
-
-        // 处理状态
-        if ("FAILED".equals(item.status)) {
-            bubble.setStatus(true);
-            bubble.setRetryAction(() -> performResend(item, bubble));
-        }
-
-        return wrapper;
-    }
-
-    private void performResend(com.bluelink.db.TransferDao.LogItem item, com.bluelink.ui.bubble.BubblePanel bubble) {
-        System.out.println("DEBUG: performResend called for item " + item.id);
-        // 重试逻辑
-        bubble.setStatus(false); // 先清除错误状态
-
-        new Thread(() -> {
-            try {
-                if ("TEXT".equals(item.type)) {
-                    if (currentSession != null) {
-                        currentSession.sendMessage(item.content);
+                        // 再异步地处理发送文件（包括 UI 重绘和网络操作），彻底解除死锁
+                        new Thread(() -> {
+                            try {
+                                for (File file : droppedFiles) {
+                                    if (mainChatPanel != null)
+                                        mainChatPanel.performFileSend(file);
+                                }
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                        }).start();
+                        
                     } else {
-                        client.send(item.content);
+                        dtde.rejectDrop();
                     }
-                } else if ("FILE".equals(item.type)) {
-                    if (currentSession != null) {
-                        currentSession.sendFile(new File(item.content));
-                    } else {
-                        client.sendFile(new File(item.content));
-                    }
-                }
-
-                // 成功
-                item.status = "SUCCESS";
-                if (item.id > 0) {
-                    com.bluelink.db.TransferDao.updateStatus(item.id, "SUCCESS");
-                } else {
-                    com.bluelink.db.TransferDao.save(item);
-                }
-
-            } catch (Exception e) {
-                // 再次失败
-                SwingUtilities.invokeLater(() -> {
-                    if (bubble != null) {
-                        bubble.setStatus(true);
-                    }
-                });
-                item.status = "FAILED";
-                if (item.id > 0) {
-                    com.bluelink.db.TransferDao.updateStatus(item.id, "FAILED");
-                } else {
-                    com.bluelink.db.TransferDao.save(item);
+                } catch (Throwable e) {
+                    e.printStackTrace();
+                    dtde.dropComplete(false);
                 }
             }
-        }).start();
-    }
+        };
 
-    private com.bluelink.ui.bubble.BubblePanel renderTextBubble(boolean isSender, String text) {
-        JPanel wrapper = new JPanel(new MigLayout("insets 2, fillx, gap 0", "[grow]", "[]"));
-        wrapper.setOpaque(false);
-        com.bluelink.ui.bubble.BubblePanel bubble = com.bluelink.ui.bubble.BubbleFactory.createTextBubble(isSender,
-                text);
-        String constraints = isSender ? "al right, width ::80%" : "al left, width ::80%";
-        wrapper.add(bubble, constraints);
-
-        chatArea.add(wrapper, "growx, wrap");
-
-        handleNewMessageScroll();
-        return bubble;
-    }
-
-    private com.bluelink.ui.bubble.BubblePanel renderFileBubble(boolean isSender, File file) {
-        return renderFileBubble(isSender, file, file.getName());
-    }
-
-    private com.bluelink.ui.bubble.BubblePanel renderFileBubble(boolean isSender, File file, String key) {
-        JPanel wrapper = new JPanel(new MigLayout("insets 2, fillx, gap 0", "[grow]", "[]"));
-        wrapper.setOpaque(false);
-        com.bluelink.ui.bubble.BubblePanel bubble = com.bluelink.ui.bubble.BubbleFactory.createFileBubble(isSender,
-                file);
-
-        if (isSender) {
-            sendingFileBubbles.put(key, bubble);
-            bubble.setProgress(0f);
-        }
-
-        String constraints = isSender ? "al right, width ::80%" : "al left, width ::80%";
-        wrapper.add(bubble, constraints);
-
-        chatArea.add(wrapper, "growx, wrap");
-
-        handleNewMessageScroll();
-        return bubble;
-    }
-
-    private void handleNewMessageScroll() {
-        if (isUserAtBottom) {
-            scrollToBottom();
-        } else {
-            // 提示新消息
-            backToBottomBtn.setText("↓ 新消息");
-            backToBottomBtn.setVisible(true);
-        }
-    }
-
-    public void loadHistory() {
-        // 初始加载最新的 25 条
-        java.util.List<com.bluelink.db.TransferDao.LogItem> list = com.bluelink.db.TransferDao.loadHistory(-1, 25);
-        for (com.bluelink.db.TransferDao.LogItem item : list) {
-            // 这里按顺序添加到此时是空的 chatArea，所以直接 add 即可
-            // 同时更新 minLoadedId
-            if (item.id < minLoadedId) {
-                minLoadedId = item.id;
-            }
-            // 复用逻辑
-            if ("TEXT".equals(item.type)) {
-                // renderTextBubble(item.isSender, item.content); // 以前的方法会强制滚到底部
-                // 我们手动添加不触发滚动逻辑，等到最后统一滚到底
-                JPanel w = createBubbleWrapper(item);
-                chatArea.add(w, "growx, wrap");
-            } else {
-                JPanel w = createBubbleWrapper(item);
-                chatArea.add(w, "growx, wrap");
-            }
-        }
-        scrollToBottom();
+        JPanel glassPane = new JPanel();
+        glassPane.setOpaque(false);
+        glassPane.setLayout(null);
+        new java.awt.dnd.DropTarget(glassPane, dropListener);
+        this.setGlassPane(glassPane);
+        glassPane.setVisible(true);
     }
 
     public static void main(String[] args) {
-        // 确保数据库初始化
         com.bluelink.db.DatabaseManager.initDatabase();
-
         SwingUtilities.invokeLater(() -> {
             UiUtils.initTheme();
             ModernQQFrame frame = new ModernQQFrame();
-            frame.loadHistory(); // 加载历史
             frame.setVisible(true);
         });
     }

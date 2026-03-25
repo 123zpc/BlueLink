@@ -80,7 +80,7 @@ public class ProtocolReader {
 
         // 5. 读取压缩数据
         // 安全检查: 防止 OOM
-        if (compressedSize > 100 * 1024 * 1024) { // 100MB max per packet for safety
+        if (compressedSize > 300 * 1024 * 1024) { // 300MB max per packet for safety
             throw new IOException("数据包过大: " + compressedSize);
         }
 

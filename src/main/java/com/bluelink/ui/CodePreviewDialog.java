@@ -32,9 +32,10 @@ public class CodePreviewDialog extends JFrame {
     private JToggleButton themeToggle;
     private JLabel encodingLabel;
     private RTextScrollPane sp;
+    private SwingWorker<Void, String> loadWorker;
+    private static final long LARGE_FILE_THRESHOLD = 2L * 1024 * 1024;
 
     private boolean isDarkTheme = true; // 默认暗色
-
     public CodePreviewDialog(File file) {
         this.file = file;
         this.textArea = new RSyntaxTextArea(30, 80);
@@ -247,15 +248,52 @@ public class CodePreviewDialog extends JFrame {
     }
 
     private void loadFile() {
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(new FileInputStream(file), currentCharset))) {
-            textArea.read(reader, null);
-            textArea.setCaretPosition(0);
-            textArea.setFont(new Font("Microsoft YaHei", Font.PLAIN, 14));
-        } catch (IOException e) {
-            e.printStackTrace();
-            textArea.setText("无法读取文件: " + e.getMessage());
+        if (loadWorker != null) {
+            loadWorker.cancel(true);
         }
+        setTitle("预览: " + file.getName());
+        textArea.setText("");
+        textArea.setCaretPosition(0);
+
+        boolean large = file.length() > LARGE_FILE_THRESHOLD;
+        textArea.setCodeFoldingEnabled(!large);
+        loadWorker = new SwingWorker<Void, String>() {
+            @Override
+            protected Void doInBackground() {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(new FileInputStream(file), currentCharset))) {
+                    char[] buffer = new char[8192];
+                    int len;
+                    while ((len = reader.read(buffer)) > 0) {
+                        if (isCancelled()) {
+                            return null;
+                        }
+                        publish(new String(buffer, 0, len));
+                    }
+                } catch (IOException e) {
+                    publish("\n\n无法读取文件: " + e.getMessage());
+                }
+                return null;
+            }
+
+            @Override
+            protected void process(java.util.List<String> chunks) {
+                for (String chunk : chunks) {
+                    textArea.append(chunk);
+                }
+            }
+
+            @Override
+            protected void done() {
+                if (isCancelled()) {
+                    return;
+                }
+                setTitle("预览: " + file.getName());
+                textArea.setCaretPosition(0);
+                textArea.setFont(new Font("Microsoft YaHei", Font.PLAIN, 14));
+            }
+        };
+        loadWorker.execute();
     }
 
     private void saveFile() {

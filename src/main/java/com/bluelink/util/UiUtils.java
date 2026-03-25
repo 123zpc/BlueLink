@@ -14,6 +14,7 @@ public class UiUtils {
     public static final Color COLOR_PRIMARY = new Color(0, 153, 255); // #0099FF
     public static final Color COLOR_BG_SIDEBAR = new Color(46, 46, 46); // 深灰侧边栏
     public static final Color COLOR_TEXT_SIDEBAR = new Color(200, 200, 200);
+    // 回退到 Microsoft YaHei 以确保中文完美显示，Emoji 将通过 Twemoji 图片方案解决
     public static final Font FONT_NORMAL = new Font("Microsoft YaHei", Font.PLAIN, 12);
     public static final Font FONT_BOLD = new Font("Microsoft YaHei", Font.BOLD, 14);
 
@@ -23,6 +24,7 @@ public class UiUtils {
     public static void initTheme() {
         try {
             FlatLightLaf.setup();
+            // 全局字体回退到 Microsoft YaHei
             setGlobalFont(new Font("Microsoft YaHei", Font.PLAIN, 12));
 
             // 优化滚动条样式
